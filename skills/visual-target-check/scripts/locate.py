@@ -61,7 +61,8 @@ def ocr_engine():
         from rapidocr import RapidOCR
     except ImportError as exc:
         raise RuntimeError("OCR requires rapidocr and onnxruntime; install requirements.txt") from exc
-    return RapidOCR(params={"Global.log_level": "warning", "Global.text_score": 0.0})
+    return RapidOCR(params={"Global.log_level": "warning", "Global.text_score": 0.0,
+                            "Global.return_single_char_box": True})
 
 
 def ocr_variants(crop: np.ndarray, config: dict):
@@ -127,6 +128,7 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
     crop = screenshot[top:top + height, left:left + width]
     wanted = "".join(target.casefold().split())
     recognized = []
+    partial_matches = []
     for method, prepared, factor in ocr_variants(crop, config):
         output = engine(cv2.cvtColor(prepared, cv2.COLOR_GRAY2BGR), return_word_box=True)
         matches = []
@@ -135,7 +137,9 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
             score = float(output.scores[index])
             line_box = image_box(output.boxes[index], factor, config["roi"])
             lines.append(text_result(line, score, line_box, config, method))
-            words = (output.word_results or ())[index] or ()
+            word_results = output.word_results or ()
+            words = word_results[index] if index < len(word_results) else ()
+            words = words or ()
             line_matches = []
             for start in range(len(words)):
                 for end in range(start + 1, len(words) + 1):
@@ -158,6 +162,10 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
             recognized = lines
         if matches:
             matches.sort(key=lambda item: (item["image_center"][1], item["image_center"][0]))
+            if occurrence is not None and occurrence > len(matches):
+                if len(matches) > len(partial_matches):
+                    partial_matches = matches
+                continue
             selected = matches[occurrence - 1] if occurrence is not None and occurrence <= len(matches) else None
             if occurrence is None and len(matches) == 1:
                 selected = matches[0]
@@ -167,7 +175,7 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
                     "roi": config["roi"], "recognized": lines, "matches": matches}
     return {"matched": False, "ambiguous": False, "confidence": 0.0,
             "image_bbox": None, "screen_bbox": None, "image_center": None, "screen_center": None,
-            "roi": config["roi"], "recognized": recognized, "matches": []}
+            "roi": config["roi"], "recognized": recognized, "matches": partial_matches}
 
 
 def set_dpi_awareness() -> None:
@@ -250,10 +258,18 @@ def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path
     left, top, width, height = config["roi"]
     canvas = cv2.cvtColor(screenshot[top:top + height, left:left + width], cv2.COLOR_GRAY2BGR)
     color = (0, 180, 0) if result["matched"] and result.get("stable", True) else (0, 120, 255)
-    if result["image_bbox"] is not None:
-        x, y, box_width, box_height = result["image_bbox"]
+    candidates = result.get("matches") or [result]
+    for index, candidate in enumerate(candidates, 1):
+        if candidate["image_bbox"] is None:
+            continue
+        x, y, box_width, box_height = candidate["image_bbox"]
         x, y = round(x - left), round(y - top)
-        cv2.rectangle(canvas, (x, y), (x + round(box_width), y + round(box_height)), color, 2)
+        candidate_color = (0, 180, 0) if (result["matched"] and result.get("stable", True)
+                                          and candidate["image_bbox"] == result["image_bbox"]) else (0, 120, 255)
+        cv2.rectangle(canvas, (x, y), (x + round(box_width), y + round(box_height)), candidate_color, 2)
+        if result.get("matches"):
+            cv2.putText(canvas, str(index), (x, max(12, y - 3)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, candidate_color, 1)
     cv2.putText(canvas, f"confidence={result['confidence']:.3f}", (4, min(height - 4, 18)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
     path.parent.mkdir(parents=True, exist_ok=True)

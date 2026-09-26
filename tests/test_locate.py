@@ -195,6 +195,38 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(result["preprocess"], "upscale")
         self.assertEqual(engine.call_count, 2)
 
+    def test_ocr_occurrence_retries_when_first_pass_finds_too_few(self):
+        def box(x, y):
+            return [[x, y], [x + 40, y], [x + 40, y + 20], [x, y + 20]]
+
+        first = SimpleNamespace(txts=("确认",), scores=(0.95,), boxes=(box(10, 10),),
+                                word_results=())
+        second = SimpleNamespace(txts=("确认", "确认"), scores=(0.96, 0.97),
+                                 boxes=(box(20, 20), box(100, 100)), word_results=())
+        config = {"roi": [0, 0, 100, 100], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.9,
+                  "ocr_threshold": 0.7, "ocr_occurrence": 2,
+                  "ocr_preprocess": ["raw", "upscale"], "ocr_scale": 2,
+                  "ocr_adaptive_block_size": 31, "ocr_adaptive_c": 11}
+        engine = mock.Mock(side_effect=[first, second])
+        result = module.locate_text(np.zeros((100, 100), dtype=np.uint8), "确认", config, engine)
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["preprocess"], "upscale")
+        self.assertEqual(result["image_center"], [60.0, 55.0])
+        self.assertEqual(engine.call_count, 2)
+
+    def test_ambiguous_ocr_evidence_marks_all_candidates(self):
+        config = {"roi": [0, 0, 100, 100]}
+        result = {"matched": False, "confidence": 0.0, "image_bbox": None,
+                  "matches": [{"image_bbox": [10, 30, 20, 10]},
+                              {"image_bbox": [50, 60, 20, 10]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ambiguous.png"
+            module.save_evidence(np.zeros((100, 100), dtype=np.uint8), result, config, path)
+            image = module.cv2.imread(str(path))
+            self.assertTrue(image[30, 10].any())
+            self.assertTrue(image[60, 50].any())
+
     def test_live_ocr_maps_window_roi_and_stays_dry(self):
         gray = np.zeros((40, 80), dtype=np.uint8)
         bgra = np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2)

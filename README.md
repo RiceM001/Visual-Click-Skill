@@ -29,18 +29,18 @@ python -m unittest discover -s tests -v
 
 ## 文字定位 / OCR text targeting
 
-`--text` 精确匹配指定文字。OCR 先尝试原始 ROI，再按 `ocr_preprocess` 顺序尝试放大、Otsu 二值化、自适应二值化和反色；找到达到 `ocr_threshold` 的结果即停止。优先使用字词框定位行内部分文字；只有整行完全匹配时才回退到行框。
+`--text` 精确匹配指定文字。OCR 先尝试原始 ROI，再按 `ocr_preprocess` 顺序尝试放大、Otsu 二值化、自适应二值化和反色；找到达到 `ocr_threshold` 且满足 `ocr_occurrence` 的结果才停止。启用单字框以定位词内子串；只有整行完全匹配时才回退到行框。
 
-`--text` matches exact text. OCR tries the raw ROI first, then the configured sequence of upscaling, Otsu, adaptive thresholding, and inversion. It stops at a match above `ocr_threshold`. Word/character boxes locate text inside a line; a full-line box is used only for an exact full-line match.
+`--text` matches exact text. OCR tries the raw ROI first, then the configured sequence of upscaling, Otsu, adaptive thresholding, and inversion. It stops when matches pass `ocr_threshold` and satisfy `ocr_occurrence`. Single-character boxes locate substrings inside words; a full-line box is used only for an exact full-line match.
 
 ```bash
 python skills/visual-target-check/scripts/locate.py --config config.example.json --screenshot path/to/screenshot.png --text "设置"
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "设置" --execute
 ```
 
-结果含识别文字、置信度、`image_bbox`、`screen_bbox`、中心点、预处理方法及同一 ROI 中识别出的文字。若同一文字出现多处，默认返回 `ambiguous: true` 并禁止点击；在配置中设置 `ocr_occurrence`（从上到下、从左到右，1 起）才选择其中一个。
+结果含识别文字、置信度、`image_bbox`、`screen_bbox`、中心点、预处理方法及同一 ROI 中识别出的文字。若同一文字出现多处，默认返回 `ambiguous: true` 并禁止点击；`--evidence` 会给每个候选框编号。在配置中设置 `ocr_occurrence`（从上到下、从左到右，1 起）才选择其中一个。
 
-Results include recognized text, confidence, image and screen boxes, centers, the preprocessing method, and OCR lines found in the ROI. Duplicate targets return `ambiguous: true` and block clicks by default; set the 1-based `ocr_occurrence` (top-to-bottom, left-to-right) to select one.
+Results include recognized text, confidence, image and screen boxes, centers, the preprocessing method, and OCR lines found in the ROI. Duplicate targets return `ambiguous: true` and block clicks by default; `--evidence` numbers every candidate box. Set the 1-based `ocr_occurrence` (top-to-bottom, left-to-right) to select one.
 
 运行前按截图修改 `config.example.json`。`roi` 是截图像素中的 `[left, top, width, height]`；`screen_origin` 是截图左上角的物理屏幕坐标；物理像素截图的 `physical_pixels_per_image_pixel` 为 `1.0`，仅在图片被缩放或以逻辑像素截取时修改。
 
