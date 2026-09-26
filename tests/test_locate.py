@@ -198,6 +198,30 @@ class LocateTests(unittest.TestCase):
                              [-1848, 147])
             click.assert_called_once_with(-1848, 147)
 
+    def test_desktop_double_click_requires_unobscured_target(self):
+        result = {"matched": True, "stable": True, "screen_center": [506, 94]}
+        config = {"target_surface": "desktop", "click_offset": [0, 0],
+                  "click_count": 2, "click_interval_ms": 120}
+        monitors = [None, {"left": 0, "top": 0, "width": 1000, "height": 1000}]
+        with (mock.patch.object(module, "window_classes_at", return_value=["QtWindow"]) as classes,
+              mock.patch.object(module, "send_click") as click):
+            with self.assertRaisesRegex(ValueError, "not on the Windows desktop"):
+                module.execute_click(result, config, monitors)
+            classes.assert_called_once_with(506, 94)
+            click.assert_not_called()
+        with (mock.patch.object(module, "window_classes_at",
+                                return_value=["SysListView32", "SHELLDLL_DefView", "WorkerW"]),
+              mock.patch.object(module, "send_click") as click,
+              mock.patch.object(module.time, "sleep") as sleep):
+            self.assertEqual(module.execute_click(result, config, monitors), [506, 94])
+            self.assertEqual(click.call_args_list, [mock.call(506, 94), mock.call(506, 94)])
+            sleep.assert_called_once_with(0.12)
+        config["click_count"] = 3
+        with mock.patch.object(module, "send_click") as click:
+            with self.assertRaisesRegex(ValueError, "click_count"):
+                module.execute_click(result, config, monitors)
+            click.assert_not_called()
+
     def test_evidence_contains_only_roi(self):
         screenshot = np.random.default_rng(3).integers(0, 256, (80, 90), dtype=np.uint8)
         template = screenshot[30:40, 40:50].copy()
@@ -371,6 +395,11 @@ class LocateTests(unittest.TestCase):
             result = module.inspect_desktop()
         self.assertEqual(result["monitors"][0]["left"], -1920)
         self.assertEqual(result["foreground_window"]["title"], "Editor")
+        with (mock.patch.object(module.sys, "platform", "win32"),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", side_effect=RuntimeError("no active, visible window")),
+              mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)})):
+            self.assertIsNone(module.inspect_desktop()["foreground_window"])
 
 
 if __name__ == "__main__":

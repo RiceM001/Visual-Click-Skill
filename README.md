@@ -28,6 +28,8 @@ python -m unittest discover -s tests -v
 
 `--inspect` prints monitor geometry and the foreground window's title/bounds to help configure the tool. `--evidence` saves only the annotated ROI, never the full screen.
 
+桌面没有可用前台窗口时，`--inspect` 返回 `foreground_window: null`。 / When the desktop has no active window, `--inspect` returns `foreground_window: null`.
+
 ## 图片定位 / Image targeting
 
 `template_scales` 支持多个缩放比例，例如 `[0.75, 1.0, 1.25]`，适合 DPI 或界面缩放变化。每个比例的候选框经过 `template_nms_iou` 去重；同一 ROI 内有多个目标时默认阻止点击，先用 `--evidence` 查看编号，再设置从上到下、从左到右的 `template_occurrence`（1 起）。`template_max_candidates` 限制候选数量；超过上限时拒绝点击。比例越多，匹配耗时越长。
@@ -65,7 +67,17 @@ In live mode, `screen_origin + roi` defines the physical capture region; the sca
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --template path/to/button.png --execute
 ```
 
-点击前检查连续匹配、显示器边界和预期前台窗口；不会自动切换窗口。 / Before clicking, the tool checks repeated matches, monitor bounds, and the expected foreground window. It never activates a window.
+点击前检查连续匹配和显示器边界；窗口模式还检查预期前台窗口。工具不会自动切换窗口。 / Before clicking, the tool checks repeated matches and monitor bounds; window mode also checks the expected foreground window. It never activates a window.
+
+## 桌面与窗口点击 / Desktop and window clicks
+
+截图中的红框只用于确定目标与搜索区域；每次点击都从当前屏幕 ROI 重新识别目标，不能直接复用截图坐标。先运行 `--live --watch` 核对唯一匹配的框与置信度，再显式加入 `--execute`。`target_surface: "window"` 要求 `expected_window_title` 与前台窗口匹配；`target_surface: "desktop"` 要求点击点属于 Windows 桌面图标列表，遮挡时拒绝点击。`click_count: 1` 单击按钮，`click_count: 2` 双击文件夹；双击间隔由 `click_interval_ms` 配置，且必须短于 Windows 双击时间。执行后检查目标页面标题或打开的文件夹；未确认时重新定位，最多重试一次。
+
+A marked reference image identifies the target and search area, not a reusable screen coordinate. Check a unique live match with `--live --watch`, then add `--execute` explicitly. `target_surface: "window"` checks the foreground title; `"desktop"` requires the click point to belong to the Windows desktop icon view and rejects overlays. Use `click_count: 1` for a button or `2` for a folder, with `click_interval_ms` below the Windows double-click time. Verify the destination page or opened folder; if unclear, reacquire the target before at most one retry.
+
+例如，点击 FlClash 的“代理”需设置 `target_surface: "window"`、`expected_window_title: "FlClash"` 和侧边栏 ROI；双击桌面上的“1.6.3”需设置 `target_surface: "desktop"`、`click_count: 2` 和桌面 ROI。两者都可用 `--live --watch --text "目标文字" --execute`，点击一次或双击一次后停止。
+
+For example, use a sidebar ROI and `expected_window_title: "FlClash"` to click its “代理” button. To open a desktop folder named “1.6.3”, use a desktop ROI, `target_surface: "desktop"`, and `click_count: 2`. Both use `--live --watch --text "target text" --execute` and stop after one action.
 
 输出示例 / Example output:
 

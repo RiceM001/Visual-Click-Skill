@@ -1,3 +1,3 @@
 # 技能 / Skills
 
-- [visual-target-check](visual-target-check/SKILL.md)：多尺度图片匹配、OCR 文字定位、实时目标框跟踪、坐标映射和安全点击。 / Multi-scale matching, OCR text targeting, live bounding-box tracking, coordinate mapping, and guarded clicks.
+- [visual-target-check](visual-target-check/SKILL.md)：实时图片/OCR 定位、桌面与窗口安全单击/双击、坐标映射和结果核验。 / Live image/OCR targeting, guarded desktop or window clicks and double-clicks, coordinate mapping, and outcome checks.

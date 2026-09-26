@@ -292,24 +292,60 @@ def monitor_value(monitor, key: str) -> int:
     return monitor[key] if isinstance(monitor, dict) else getattr(monitor, key)
 
 
+def window_classes_at(x: int, y: int) -> list[str]:
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetParent.argtypes = [wintypes.HWND]
+    user32.GetParent.restype = wintypes.HWND
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    hwnd = user32.WindowFromPoint(wintypes.POINT(x, y))
+    classes = []
+    while hwnd:
+        name = ctypes.create_unicode_buffer(256)
+        if not user32.GetClassNameW(hwnd, name, len(name)):
+            break
+        classes.append(name.value)
+        hwnd = user32.GetParent(hwnd)
+    return classes
+
+
 def execute_click(result: dict, config: dict, monitors: list) -> list[int]:
     if not result["matched"] or not result["stable"]:
         raise ValueError("target is not matched and stable")
-    title_expected = config["expected_window_title"]
+    surface = config.get("target_surface", "window")
+    title_expected = config.get("expected_window_title")
     offset = config["click_offset"]
-    if (not isinstance(title_expected, str) or not title_expected.strip()
+    count = config.get("click_count", 1)
+    interval = config.get("click_interval_ms", 0)
+    if (surface not in ("window", "desktop")
+            or (surface == "window" and (not isinstance(title_expected, str) or not title_expected.strip()))
             or not isinstance(offset, list) or len(offset) != 2
+            or type(count) is not int or count not in (1, 2)
+            or type(interval) not in (int, float) or not math.isfinite(interval)
+            or interval < 0 or (count == 2 and interval == 0)
             or any(type(v) is not int for v in offset)):
-        raise ValueError("expected_window_title and click_offset are required for execute")
+        raise ValueError("invalid target_surface, expected_window_title, click_offset, click_count, or click_interval_ms")
+    if count == 2 and sys.platform == "win32" and interval >= ctypes.windll.user32.GetDoubleClickTime():
+        raise ValueError("click_interval_ms exceeds the Windows double-click time")
     x, y = [round(result["screen_center"][i] + offset[i]) for i in range(2)]
     if not any(monitor_value(m, "left") <= x < monitor_value(m, "left") + monitor_value(m, "width")
                and monitor_value(m, "top") <= y < monitor_value(m, "top") + monitor_value(m, "height")
                for m in monitors[1:]):
         raise ValueError("target is outside connected monitors")
-    title, (left, top, right, bottom) = foreground_window()
-    if title_expected.casefold() not in title.casefold() or not (left <= x < right and top <= y < bottom):
-        raise ValueError("target is outside the expected foreground window")
-    send_click(x, y)
+    if surface == "desktop":
+        if window_classes_at(x, y)[:2] != ["SysListView32", "SHELLDLL_DefView"]:
+            raise ValueError("target is not on the Windows desktop")
+    else:
+        title, (left, top, right, bottom) = foreground_window()
+        if title_expected.casefold() not in title.casefold() or not (left <= x < right and top <= y < bottom):
+            raise ValueError("target is outside the expected foreground window")
+    for index in range(count):
+        if index:
+            time.sleep(interval / 1000)
+        send_click(x, y)
     return [x, y]
 
 
@@ -322,8 +358,14 @@ def inspect_desktop() -> dict:
     with MSS() as sct:
         monitors = [{key: monitor_value(m, key) for key in ("left", "top", "width", "height")}
                     for m in sct.monitors[1:]]
-    title, bounds = foreground_window()
-    return {"monitors": monitors, "foreground_window": {"title": title, "bounds": bounds}}
+    try:
+        title, bounds = foreground_window()
+        foreground = {"title": title, "bounds": bounds}
+    except RuntimeError as exc:
+        if str(exc) != "no active, visible window":
+            raise
+        foreground = None
+    return {"monitors": monitors, "foreground_window": foreground}
 
 
 def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path) -> None:
@@ -405,6 +447,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             if execute and result["stable"]:
                 result["click_point"] = execute_click(result, config, sct.monitors)
                 result["clicked"] = True
+                result["click_count"] = config.get("click_count", 1)
             if on_frame:
                 result["frame"] = frame + 1
                 on_frame(result)
