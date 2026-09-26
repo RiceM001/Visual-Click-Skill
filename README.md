@@ -1,4 +1,4 @@
-# 🎯 视觉定位与安全点击
+# 🎯 Visual-Click-Skill
 
 从截图或实时屏幕识别图片、文字，返回目标框与物理屏幕坐标；需要时在最新位置单击或双击。默认只识别，只有显式使用 --execute 才会操作鼠标。
 
@@ -7,7 +7,7 @@
 - **实时跟踪**：逐帧更新目标框。目标移动时重新定位，丢失时重置稳定计数。
 - **图片与文字识别**：多尺度模板匹配；OCR 支持放大、局部对比度增强、二值化、反色和单字框定位。
 - **准确映射**：处理 ROI 偏移、DPI 缩放和多显示器负坐标；窗口 ROI 可随前台窗口移动。
-- **安全点击**：重复目标默认不点击；窗口模式校验前台标题，桌面模式校验图标未被遮挡；支持可配置双击。
+- **安全点击**：重复目标默认不点击；连续稳定后再取一帧复核最新位置；窗口模式校验前台标题，桌面模式校验图标未被遮挡；支持可配置双击。
 
 ## 🚀 快速开始
 
@@ -68,7 +68,7 @@ python skills/visual-target-check/scripts/locate.py --config config.example.json
 将 skills/visual-target-check 复制到代理的技能目录，或运行：
 
 ~~~bash
-npx skills add RiceM001/visual-target-check --skill visual-target-check
+npx skills add RiceM001/Visual-Click-Skill --skill visual-target-check
 ~~~
 
 技能文件遵循 [Agent Skills 规范](https://agentskills.io/specification)。

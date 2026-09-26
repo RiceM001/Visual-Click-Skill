@@ -147,7 +147,7 @@ class LocateTests(unittest.TestCase):
     def test_unstable_live_match_blocks_execute(self):
         template = np.random.default_rng(4).integers(0, 256, (8, 8), dtype=np.uint8)
         frames = []
-        for x in (10, 20):
+        for x in (10, 10, 20):
             gray = np.zeros((40, 40), dtype=np.uint8)
             gray[10:18, x:x + 8] = template
             frames.append(np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2))
@@ -180,7 +180,7 @@ class LocateTests(unittest.TestCase):
     def test_watch_tracks_movement_and_clicks_latest_stable_frame(self):
         template = np.random.default_rng(31).integers(0, 256, (8, 8), dtype=np.uint8)
         frames = []
-        for x in (10, 20, None, 25, 25):
+        for x in (10, 20, None, 25, 25, 25):
             gray = np.zeros((40, 50), dtype=np.uint8)
             if x is not None:
                 gray[10:18, x:x + 8] = template
@@ -209,10 +209,10 @@ class LocateTests(unittest.TestCase):
               mock.patch.object(module, "set_dpi_awareness"),
               mock.patch.object(module, "execute_click", side_effect=lambda result, *_: result["screen_center"]) as click):
             result = module.run_live(template, config, execute=True, on_frame=observed.append)
-        self.assertEqual([item["frame"] for item in observed], [1, 2, 3, 4, 5])
+        self.assertEqual([item["frame"] for item in observed], [1, 2, 3, 4, 5, 6])
         self.assertEqual([item["screen_center"] for item in observed if item["matched"]],
-                         [[114.0, 214.0], [124.0, 214.0], [129.0, 214.0], [129.0, 214.0]])
-        self.assertEqual([item["stable"] for item in observed], [False, False, False, False, True])
+                         [[114.0, 214.0], [124.0, 214.0], [129.0, 214.0], [129.0, 214.0], [129.0, 214.0]])
+        self.assertEqual([item["stable"] for item in observed], [False, False, False, False, True, True])
         self.assertEqual(result["click_point"], [129.0, 214.0])
         click.assert_called_once()
 

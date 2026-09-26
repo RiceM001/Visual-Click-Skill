@@ -402,7 +402,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     interval = config["frame_interval_ms"]
     shift = config["max_center_shift_px"]
     relative_to = config.get("roi_relative_to", "screen")
-    limit = config.get("watch_frames") if on_frame else count
+    limit = config.get("watch_frames") if on_frame else count + bool(execute)
     if (type(count) is not int or count < 1
             or type(interval) not in (int, float) or not math.isfinite(interval) or interval < 0
             or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0
@@ -418,6 +418,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     engine = ocr_engine() if isinstance(target, str) else None
     first_center = None
     streak = 0
+    ready_to_click = False
     with MSS() as sct:
         frame = 0
         while limit is None or frame < limit:
@@ -457,10 +458,11 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                 streak = 0
             result["stable"] = streak >= count
             result["clicked"] = False
-            if execute and result["stable"]:
+            if execute and result["stable"] and ready_to_click:
                 result["click_point"] = execute_click(result, config, sct.monitors)
                 result["clicked"] = True
                 result["click_count"] = config.get("click_count", 1)
+            ready_to_click = result["stable"]
             if on_frame:
                 result["frame"] = frame + 1
                 on_frame(result)

@@ -10,7 +10,7 @@ description: 用于 Windows 桌面或应用窗口中的实时图片、文字定�
 1. 从用户截图确认目标文字或模板。框选只用于缩小搜索范围，不直接使用截图中的坐标。用 --inspect 查看显示器和前台窗口；只截目标附近的 ROI。
 2. 应用窗口优先设 roi_relative_to 为 window，填写 expected_window_title，让 ROI 随窗口移动；桌面图标设 roi_relative_to 为 screen、target_surface 为 desktop。
 3. 用 --live 获取连续稳定帧后的当前目标框、置信度和屏幕坐标。需要持续观察移动目标时才用 --watch；重复目标先用 --evidence 查看编号并配置 occurrence。
-4. 默认只识别。用户明确要求操作或配置明确允许时，再加 --execute：应用按钮用 click_count=1，桌面文件夹用 click_count=2，并配置 click_interval_ms。脚本会校验显示器边界、前台窗口或桌面图标视图。
+4. 默认只识别。用户明确要求操作或配置明确允许时，再加 --execute：应用按钮用 click_count=1，桌面文件夹用 click_count=2，并配置 click_interval_ms。脚本在稳定帧后再取一帧复核最新位置，并校验显示器边界、前台窗口或桌面图标视图。
 5. 操作后独立核验新页面标题或资源管理器路径。结果不明时重新识别，最多重试一次，不连续盲点。
 
 ## 示例
