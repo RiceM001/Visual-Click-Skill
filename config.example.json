@@ -1,5 +1,6 @@
 {
   "roi": [100, 40, 200, 100],
+  "roi_relative_to": "screen",
   "screen_origin": [0, 0],
   "physical_pixels_per_image_pixel": 1.0,
   "threshold": 0.9,
@@ -15,7 +16,7 @@
   "target_surface": "window",
   "click_count": 1,
   "click_interval_ms": 150,
-  "expected_window_title": "TODO: target window title",
+  "expected_window_title": "请填写目标窗口标题",
   "ocr_threshold": 0.75,
   "ocr_occurrence": null,
   "ocr_preprocess": ["raw", "upscale", "clahe", "otsu", "adaptive", "invert"],

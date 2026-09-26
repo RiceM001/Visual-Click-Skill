@@ -1,4 +1,4 @@
-"""Locate a visual target; live capture defaults to dry-run."""
+"""实时定位图片或文字；默认只识别。"""
 
 import argparse
 import ctypes
@@ -401,21 +401,20 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     count = config["stable_frames"]
     interval = config["frame_interval_ms"]
     shift = config["max_center_shift_px"]
+    relative_to = config.get("roi_relative_to", "screen")
     limit = config.get("watch_frames") if on_frame else count
     if (type(count) is not int or count < 1
             or type(interval) not in (int, float) or not math.isfinite(interval) or interval < 0
             or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0
-            or (limit is not None and (type(limit) is not int or limit < 1))):
-        raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, or watch_frames")
+            or (limit is not None and (type(limit) is not int or limit < 1))
+            or relative_to not in ("screen", "window")):
+        raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, watch_frames, or roi_relative_to")
+    if relative_to == "window" and config.get("target_surface", "window") != "window":
+        raise ValueError("window-relative ROI requires target_surface = window")
     set_dpi_awareness()
     from mss import MSS
 
     left, top, width, height = config["roi"]
-    origin = config["screen_origin"]
-    region = {"left": origin[0] + left, "top": origin[1] + top,
-              "width": width, "height": height}
-    local_config = {**config, "roi": [0, 0, width, height],
-                    "screen_origin": [region["left"], region["top"]]}
     engine = ocr_engine() if isinstance(target, str) else None
     first_center = None
     streak = 0
@@ -424,6 +423,20 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
         while limit is None or frame < limit:
             if frame:
                 time.sleep(interval / 1000)
+            origin = config["screen_origin"]
+            if relative_to == "window":
+                title, (window_left, window_top, window_right, window_bottom) = foreground_window()
+                expected = config.get("expected_window_title")
+                if (not isinstance(expected, str) or not expected.strip()
+                        or expected.casefold() not in title.casefold()
+                        or left + width > window_right - window_left
+                        or top + height > window_bottom - window_top):
+                    raise ValueError("ROI is outside the expected foreground window")
+                origin = [window_left, window_top]
+            region = {"left": origin[0] + left, "top": origin[1] + top,
+                      "width": width, "height": height}
+            local_config = {**config, "roi": [0, 0, width, height],
+                            "screen_origin": [region["left"], region["top"]]}
             try:
                 screenshot = np.asarray(sct.grab(region))
             except Exception as exc:
@@ -466,13 +479,13 @@ def main() -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--screenshot", type=Path)
     source.add_argument("--live", action="store_true")
-    source.add_argument("--inspect", action="store_true", help="show monitors and foreground window")
+    source.add_argument("--inspect", action="store_true", help="查看显示器和前台窗口")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--template", type=Path)
-    target_group.add_argument("--text", help="locate exact text using OCR")
-    parser.add_argument("--evidence", type=Path, help="save annotated ROI image")
-    parser.add_argument("--execute", action="store_true", help="click only in live mode")
-    parser.add_argument("--watch", action="store_true", help="stream fresh live positions as JSON Lines")
+    target_group.add_argument("--text", help="使用 OCR 精确定位文字")
+    parser.add_argument("--evidence", type=Path, help="保存带识别框的 ROI 图片")
+    parser.add_argument("--execute", action="store_true", help="在实时模式下执行点击")
+    parser.add_argument("--watch", action="store_true", help="逐帧输出最新位置")
     args = parser.parse_args()
     try:
         if args.inspect:

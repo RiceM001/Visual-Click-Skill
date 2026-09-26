@@ -106,6 +106,44 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(result["screen_center"], [-1890.0, 26.0])
         click.assert_not_called()
 
+    def test_window_relative_roi_follows_moving_window(self):
+        gray = np.random.default_rng(9).integers(0, 256, (40, 40), dtype=np.uint8)
+        bgra = np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2)
+        template = gray[12:20, 15:25].copy()
+        config = {"roi": [10, 10, 40, 40], "roi_relative_to": "window",
+                  "screen_origin": [0, 0], "physical_pixels_per_image_pixel": 1,
+                  "threshold": 0.99, "stable_frames": 2, "frame_interval_ms": 0,
+                  "max_center_shift_px": 50, "watch_frames": 2,
+                  "expected_window_title": "FlClash", "target_surface": "window"}
+        regions = []
+
+        class FakeMss:
+            monitors = [None, {"left": 0, "top": 0, "width": 1000, "height": 1000}]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def grab(self, region):
+                regions.append(region.copy())
+                return bgra
+
+        windows = [("FlClash", (100, 200, 500, 500)),
+                   ("FlClash", (130, 220, 530, 520))]
+        observed = []
+        with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", side_effect=windows),
+              mock.patch.object(module, "send_click") as click):
+            module.run_live(template, config, execute=False, on_frame=observed.append)
+        self.assertEqual([region["left"] for region in regions], [110, 140])
+        self.assertEqual([item["screen_center"] for item in observed],
+                         [[130.0, 226.0], [160.0, 246.0]])
+        self.assertTrue(observed[-1]["stable"])
+        click.assert_not_called()
+
     def test_unstable_live_match_blocks_execute(self):
         template = np.random.default_rng(4).integers(0, 256, (8, 8), dtype=np.uint8)
         frames = []
