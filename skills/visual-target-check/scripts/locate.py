@@ -45,10 +45,15 @@ def template_variant(image: np.ndarray, method: str, config: dict) -> np.ndarray
                                tileGridSize=(config["template_clahe_grid_size"],) * 2).apply(image)
     if method == "otsu":
         return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    if method == "gaussian":
+        return cv2.GaussianBlur(image, (config["template_denoise_kernel"],) * 2, 0)
+    if method == "median":
+        return cv2.medianBlur(image, config["template_denoise_kernel"])
     return cv2.Canny(image, config["template_canny_low"], config["template_canny_high"])
 
 
-def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, method: str) -> dict:
+def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, method: str,
+                prepared: dict | None = None) -> dict:
     validate_config(config, screenshot.shape)
     left, top, width, height = config["roi"]
     origin = config["screen_origin"]
@@ -77,11 +82,19 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
         scaled_height = round(template.shape[0] * factor)
         if min(scaled_width, scaled_height) < 2 or scaled_width > width or scaled_height > height:
             continue
-        scaled = (template if scaled_width == template.shape[1] and scaled_height == template.shape[0]
-                  else cv2.resize(template, (scaled_width, scaled_height), interpolation=(
-                      cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC)))
-        scaled = template_variant(scaled, method, config)
-        if np.std(scaled) == 0:
+        key = (method, scaled_width, scaled_height)
+        if prepared is not None and key in prepared:
+            scaled = prepared[key]
+        else:
+            scaled = (template if scaled_width == template.shape[1] and scaled_height == template.shape[0]
+                      else cv2.resize(template, (scaled_width, scaled_height), interpolation=(
+                          cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC)))
+            scaled = template_variant(scaled, method, config)
+            if np.std(scaled) == 0:
+                scaled = None
+            if prepared is not None:
+                prepared[key] = scaled
+        if scaled is None:
             continue
         scores = cv2.matchTemplate(crop, scaled, cv2.TM_CCOEFF_NORMED)
 
@@ -136,12 +149,18 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
             "matches": matches}
 
 
-def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
+def locate(screenshot: np.ndarray, template: np.ndarray, config: dict,
+           prepared: dict | None = None) -> dict:
     methods = config.get("template_preprocess", ["gray"])
     if (not isinstance(methods, list) or not methods
-            or any(type(method) is not str or method not in ("gray", "clahe", "otsu", "edges")
+            or any(type(method) is not str or method not in ("gray", "clahe", "otsu", "edges",
+                                                          "gaussian", "median")
                    for method in methods)
             or len(methods) != len(set(methods))
+            or any(method in methods for method in ("gaussian", "median"))
+            and (type(config.get("template_denoise_kernel")) is not int
+                 or config["template_denoise_kernel"] < 3
+                 or config["template_denoise_kernel"] % 2 != 1)
             or "clahe" in methods and (type(config.get("template_clahe_clip_limit")) not in (int, float)
                                        or not math.isfinite(config["template_clahe_clip_limit"])
                                        or config["template_clahe_clip_limit"] <= 0
@@ -154,7 +173,7 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
     fallback = None
     for method in methods:
         try:
-            result = locate_once(screenshot, template, config, method)
+            result = locate_once(screenshot, template, config, method, prepared)
         except ValueError as exc:
             if str(exc) != "all template scales are larger than roi or constant":
                 raise
@@ -260,13 +279,15 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
             words = words or ()
             line_matches = []
             for start in range(len(words)):
-                for end in range(start + 1, len(words) + 1):
-                    span = words[start:end]
-                    joined = "".join("".join(str(word[0]).casefold().split()) for word in span)
+                joined = ""
+                word_score = 1.0
+                for end in range(start, len(words)):
+                    joined += "".join(str(words[end][0]).casefold().split())
+                    word_score = min(word_score, float(words[end][1]))
                     if joined == wanted:
-                        word_score = min(float(word[1]) for word in span)
                         if word_score >= threshold:
-                            points = np.concatenate([np.asarray(word[2], dtype=float) for word in span])
+                            points = np.concatenate([np.asarray(word[2], dtype=float)
+                                                     for word in words[start:end + 1]])
                             line_matches.append(text_result(target, word_score,
                                                             image_box(points, factor, config["roi"]),
                                                             config, method))
@@ -462,6 +483,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
 
     left, top, width, height = config["roi"]
     engine = ocr_engine() if isinstance(target, str) else None
+    prepared = None if isinstance(target, str) else {}
     first_center = None
     streak = 0
     ready_to_click = False
@@ -490,7 +512,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                 raise RuntimeError(f"capture failed: {exc}") from exc
             gray = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
             result = (locate_text(gray, target, local_config, engine)
-                      if isinstance(target, str) else locate(gray, target, local_config))
+                       if isinstance(target, str) else locate(gray, target, local_config, prepared))
             moved = False
             if result["matched"]:
                 center = result["screen_center"]

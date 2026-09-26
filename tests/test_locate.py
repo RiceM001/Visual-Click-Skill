@@ -91,6 +91,21 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(result["preprocess"], "edges")
         self.assertEqual(result["screen_center"], [54.0, 47.0])
 
+    def test_gaussian_fallback_recovers_noisy_target(self):
+        rng = np.random.default_rng(42)
+        template = module.cv2.GaussianBlur(rng.integers(0, 256, (28, 30), dtype=np.uint8),
+                                           (3, 3), 0)
+        screenshot = rng.integers(0, 256, (100, 110), dtype=np.uint8)
+        screenshot[40:68, 50:80] = np.clip(template.astype(float) + rng.normal(0, 55, template.shape),
+                                            0, 255).astype(np.uint8)
+        config = {"roi": [0, 0, 110, 100], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.6,
+                  "template_preprocess": ["gray", "gaussian"], "template_denoise_kernel": 3}
+        result = module.locate(screenshot, template, config)
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["preprocess"], "gaussian")
+        self.assertEqual(result["screen_center"], [65.0, 54.0])
+
     def test_fast_path_skips_enhancement_and_low_score_peak_scan(self):
         rng = np.random.default_rng(81)
         screenshot = rng.integers(0, 256, (60, 60), dtype=np.uint8)
@@ -114,7 +129,8 @@ class LocateTests(unittest.TestCase):
         template = gray[12:20, 15:25].copy()
         config = {"roi": [10, 10, 40, 40], "screen_origin": [-1920, 0],
                   "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
-                  "stable_frames": 2, "frame_interval_ms": 0, "max_center_shift_px": 0}
+                  "stable_frames": 2, "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "template_scales": [1.0, 1.5]}
 
         class FakeMss:
             monitors = [None, SimpleNamespace(left=-1920, top=0, width=1920, height=1080)]
@@ -132,11 +148,13 @@ class LocateTests(unittest.TestCase):
 
         with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
               mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module.cv2, "resize", wraps=module.cv2.resize) as resize,
               mock.patch.object(module, "send_click") as click):
             result = module.run_live(template, config, execute=False)
         self.assertTrue(result["stable"])
         self.assertFalse(result["clicked"])
         self.assertEqual(result["screen_center"], [-1890.0, 26.0])
+        self.assertEqual(resize.call_count, 1)
         click.assert_not_called()
 
     def test_window_relative_roi_follows_moving_window(self):

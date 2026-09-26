@@ -6,6 +6,7 @@
   "threshold": 0.9,
   "template_scales": [1.0],
   "template_preprocess": ["gray"],
+  "template_denoise_kernel": 3,
   "template_clahe_clip_limit": 3.0,
   "template_clahe_grid_size": 8,
   "template_canny_low": 40,
