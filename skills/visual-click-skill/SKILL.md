@@ -38,3 +38,7 @@ python scripts/locate.py --config config.example.json --live --text "1.6.3" --ex
 - 图片与 OCR 预处理默认使用 auto。实时 OCR 先尝试原图，再优先使用上次成功的增强方法；相同像素和尺寸的预处理结果只识别一次。画面及位置不变时复用识别结果。用 preprocess 和 --evidence 核验，模板大小变化时调整 template_scales。
 - 出现 frame_changed_before_click 时重新定位；--watch 会继续等待稳定。ROI 应避开无关动画、视频和计时器，避免画面持续变化导致无法点击。退出码 0 只说明输入已发送，操作是否成功仍需按第 5 步核验。
 - 置信度不足或目标重复时不点击。点击偏移先核对 ROI、窗口边框、DPI 和坐标映射；桌面被弹窗遮挡时不绕过桌面命中校验。
+
+## 代码复用
+
+scripts/locate.py 中，location_result 统一图片与 OCR 的坐标映射；select_match 统一目标编号与唯一性选择；capture_gray 统一识别和点击复核的截图入口。修改这些规则时复用对应函数，验证命令见上文。

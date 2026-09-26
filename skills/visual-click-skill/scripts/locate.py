@@ -38,6 +38,25 @@ def box_iou(a: list[float], b: list[float]) -> float:
     return intersection / (a[2] * a[3] + b[2] * b[3] - intersection)
 
 
+def location_result(box: list[float], score: float, config: dict, method: str, **metadata) -> dict:
+    """将原图目标框映射到物理屏幕；图片与 OCR 共用原点和 DPI 换算。"""
+    scale, origin = config["physical_pixels_per_image_pixel"], config["screen_origin"]
+    x, y, width, height = box
+    center = [x + width / 2, y + height / 2]
+    return {**metadata, "confidence": round(float(score), 6), "image_bbox": box,
+            "image_center": center, "preprocess": method,
+            "screen_bbox": [origin[0] + x * scale, origin[1] + y * scale, width * scale, height * scale],
+            "screen_center": [origin[i] + center[i] * scale for i in range(2)]}
+
+
+def select_match(matches: list[dict], occurrence: int | None) -> dict | None:
+    """统一按从上到下、从左到右编号；未指定编号时只允许唯一目标。"""
+    matches.sort(key=lambda item: (item["image_center"][1], item["image_center"][0]))
+    if occurrence is None:
+        return matches[0] if len(matches) == 1 else None
+    return matches[occurrence - 1] if occurrence <= len(matches) else None
+
+
 def template_variant(image: np.ndarray, method: str, config: dict) -> np.ndarray:
     if method == "gray":
         return image
@@ -58,8 +77,6 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
                 prepared: dict | None = None) -> dict:
     validate_config(config, screenshot.shape)
     left, top, width, height = config["roi"]
-    origin = config["screen_origin"]
-    scale = config["physical_pixels_per_image_pixel"]
     threshold = config["threshold"]
     scales = config.get("template_scales", [1.0])
     occurrence = config.get("template_occurrence")
@@ -101,16 +118,8 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
         scores = cv2.matchTemplate(crop, scaled, cv2.TM_CCOEFF_NORMED)
 
         def candidate(point, confidence):
-            image_center = [left + point[0] + scaled_width / 2,
-                            top + point[1] + scaled_height / 2]
-            image_bbox = [left + point[0], top + point[1], scaled_width, scaled_height]
-            return {"confidence": round(float(confidence), 6), "image_center": image_center,
-                    "screen_center": [origin[i] + image_center[i] * scale for i in range(2)],
-                    "image_bbox": image_bbox,
-                    "screen_bbox": [origin[0] + image_bbox[0] * scale,
-                                    origin[1] + image_bbox[1] * scale,
-                                    scaled_width * scale, scaled_height * scale],
-                    "template_scale": factor, "preprocess": method}
+            box = [left + point[0], top + point[1], scaled_width, scaled_height]
+            return location_result(box, confidence, config, method, template_scale=factor)
 
         _, confidence, _, point = cv2.minMaxLoc(scores)
         if best is None or confidence > best["confidence"]:
@@ -124,6 +133,7 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
         raise ValueError("all template scales are larger than roi or constant")
     matches = []
     truncated = False
+    # 多尺度可能重复命中同一目标，先按重叠面积去重，再判断是否存在多个目标。
     for item in sorted(candidates, key=lambda value: value["confidence"], reverse=True):
         if all(box_iou(item["image_bbox"], kept["image_bbox"]) < nms_iou for kept in matches):
             matches.append(item)
@@ -131,13 +141,9 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
                 matches.pop()
                 truncated = True
                 break
-    matches.sort(key=lambda value: (value["image_center"][1], value["image_center"][0]))
-    selected = None
-    if not truncated:
-        if occurrence is not None and occurrence <= len(matches):
-            selected = matches[occurrence - 1]
-        elif occurrence is None and len(matches) == 1:
-            selected = matches[0]
+    selected = select_match(matches, occurrence)
+    if truncated:  # 候选被截断时，不能确认编号或唯一性。
+        selected = None
     if selected is None:
         return {**best, "matched": False, "ambiguous": truncated or len(matches) > 1 and occurrence is None,
                 "candidate_limit_reached": truncated,
@@ -206,6 +212,7 @@ def ocr_engine():
 
 
 def ocr_variants(crop: np.ndarray, config: dict, state: dict | None = None):
+    """按需生成增强图；命中即停止，避免一次性计算全部预处理。"""
     setting = config.get("ocr_preprocess", "auto")
     methods = (["raw", "upscale", "clahe", "otsu", "adaptive", "invert"]
                if setting == "auto" else setting)
@@ -245,7 +252,7 @@ def ocr_variants(crop: np.ndarray, config: dict, state: dict | None = None):
             else:
                 image = cv2.bitwise_not(enlarged)
             image_scale = factor
-        # Identical pixels and shape yield the same OCR input; do not infer twice.
+        # 不同增强方法可能得到相同图像，按尺寸和像素摘要跳过重复推理。
         key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image), digest_size=16).digest())
         if key not in seen:
             seen.add(key)
@@ -253,22 +260,11 @@ def ocr_variants(crop: np.ndarray, config: dict, state: dict | None = None):
 
 
 def image_box(polygon, factor: int, roi: list[int]) -> list[float]:
+    """撤销 OCR 放大并加回 ROI 偏移，保持输出为原图坐标。"""
     points = np.asarray(polygon, dtype=float)
     x1, y1 = points.min(axis=0) / factor
     x2, y2 = points.max(axis=0) / factor
     return [float(roi[0] + x1), float(roi[1] + y1), float(x2 - x1), float(y2 - y1)]
-
-
-def text_result(text: str, score: float, box: list[float], config: dict, method: str) -> dict:
-    scale = config["physical_pixels_per_image_pixel"]
-    origin = config["screen_origin"]
-    center = [box[0] + box[2] / 2, box[1] + box[3] / 2]
-    return {"text": text, "confidence": round(score, 6), "image_bbox": box,
-            "image_center": center,
-            "screen_bbox": [origin[0] + box[0] * scale, origin[1] + box[1] * scale,
-                            box[2] * scale, box[3] * scale],
-            "screen_center": [origin[i] + center[i] * scale for i in range(2)],
-            "preprocess": method}
 
 
 def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None,
@@ -291,44 +287,40 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None,
         output = engine(cv2.cvtColor(prepared, cv2.COLOR_GRAY2BGR), return_word_box=True)
         matches = []
         lines = []
+        word_results = output.word_results or ()
         for index, line in enumerate(output.txts or ()):
             score = float(output.scores[index])
             line_box = image_box(output.boxes[index], factor, config["roi"])
-            lines.append(text_result(line, score, line_box, config, method))
-            word_results = output.word_results or ()
-            words = word_results[index] if index < len(word_results) else ()
-            words = words or ()
+            lines.append(location_result(line_box, score, config, method, text=line))
+            words = (word_results[index] or ()) if index < len(word_results) else ()
+            # 每个字符只规范化一次，随后复用以匹配连续子串及其精确字符框。
+            normalized_words = ["".join(str(word[0]).casefold().split()) for word in words]
             line_matches = []
             for start in range(len(words)):
                 joined = ""
                 word_score = 1.0
                 for end in range(start, len(words)):
-                    joined += "".join(str(words[end][0]).casefold().split())
+                    joined += normalized_words[end]
                     word_score = min(word_score, float(words[end][1]))
-                    if joined == wanted:
-                        if word_score >= threshold:
-                            points = np.concatenate([np.asarray(word[2], dtype=float)
-                                                     for word in words[start:end + 1]])
-                            line_matches.append(text_result(target, word_score,
-                                                            image_box(points, factor, config["roi"]),
-                                                            config, method))
+                    if joined == wanted and word_score >= threshold:
+                        points = np.concatenate([np.asarray(word[2], dtype=float)
+                                                 for word in words[start:end + 1]])
+                        line_matches.append(location_result(image_box(points, factor, config["roi"]),
+                                                            word_score, config, method, text=target))
                     if len(joined) >= len(wanted):
                         break
             if line_matches:
                 matches.extend(line_matches)
             elif "".join(line.casefold().split()) == wanted and score >= threshold:
-                matches.append(text_result(target, score, line_box, config, method))
+                matches.append(location_result(line_box, score, config, method, text=target))
         if len(lines) > len(recognized):
             recognized = lines
         if matches:
-            matches.sort(key=lambda item: (item["image_center"][1], item["image_center"][0]))
+            selected = select_match(matches, occurrence)
             if occurrence is not None and occurrence > len(matches):
                 if len(matches) > len(partial_matches):
                     partial_matches = matches
                 continue
-            selected = matches[occurrence - 1] if occurrence is not None and occurrence <= len(matches) else None
-            if occurrence is None and len(matches) == 1:
-                selected = matches[0]
             if selected is not None and state is not None:
                 state["preferred"] = method
             return {**(selected or {"confidence": 0.0, "image_bbox": None,
@@ -341,6 +333,7 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None,
 
 
 def set_dpi_awareness() -> None:
+    """使窗口边界、截图和鼠标统一使用物理像素，避免高 DPI 点击偏移。"""
     if sys.platform != "win32":
         return
     shcore = ctypes.windll.shcore
@@ -403,6 +396,7 @@ def window_classes_at(x: int, y: int) -> list[str]:
 
 
 def execute_click(result: dict, config: dict, monitors: list) -> list[int]:
+    """执行前检查目标、显示器和窗口；调用方负责最新画面与稳定帧校验。"""
     if not result["matched"] or not result["stable"]:
         raise ValueError("target is not matched and stable")
     surface = config.get("target_surface", "window")
@@ -471,8 +465,7 @@ def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path
             continue
         x, y, box_width, box_height = candidate["image_bbox"]
         x, y = round(x - left), round(y - top)
-        candidate_color = (0, 180, 0) if (result["matched"] and result.get("stable", True)
-                                          and candidate["image_bbox"] == result["image_bbox"]) else (0, 120, 255)
+        candidate_color = color if candidate["image_bbox"] == result["image_bbox"] else (0, 120, 255)
         cv2.rectangle(canvas, (x, y), (x + round(box_width), y + round(box_height)), candidate_color, 2)
         if result.get("matches"):
             cv2.putText(canvas, str(index), (x, max(12, y - 3)),
@@ -484,8 +477,18 @@ def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path
         raise OSError(f"cannot write evidence: {path}")
 
 
+def capture_gray(sct, region: dict) -> np.ndarray:
+    """正常识别和点击前复核共用截图入口，统一截图失败信息。"""
+    try:
+        screenshot = np.asarray(sct.grab(region))
+    except Exception as exc:
+        raise RuntimeError(f"capture failed: {exc}") from exc
+    return cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
+
+
 def run_live(target: np.ndarray | str, config: dict, execute: bool,
              evidence: Path | None = None, on_frame=None) -> dict:
+    """按帧定位；默认只返回结果，显式执行时还需稳定帧和新截图复核。"""
     if execute and sys.platform != "win32":
         raise ValueError("--execute is supported on Windows only")
     validate_config(config)
@@ -536,11 +539,8 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                       "width": width, "height": height}
             local_config = {**config, "roi": [0, 0, width, height],
                             "screen_origin": [region["left"], region["top"]]}
-            try:
-                screenshot = np.asarray(sct.grab(region))
-            except Exception as exc:
-                raise RuntimeError(f"capture failed: {exc}") from exc
-            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
+            gray = capture_gray(sct, region)
+            # 原点和像素都不变才复用结果，窗口移动后必须重新映射屏幕坐标。
             if region == previous_region and np.array_equal(gray, previous_gray):
                 result = previous_result.copy()
             else:
@@ -550,6 +550,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             moved = False
             if result["matched"]:
                 center = result["screen_center"]
+                # 相对本轮首帧判断稳定性，避免缓慢漂移被相邻帧比较漏掉。
                 moved = first_center is not None and math.dist(center, first_center) > shift
                 if moved:
                     streak = 0
@@ -563,8 +564,8 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             if relative_to == "window":
                 result["capture_window_bounds"] = [window_left, window_top, window_right, window_bottom]
             if execute and result["stable"] and ready_to_click and not moved:
-                # OCR can take longer than a frame. Recheck the ROI after recognition.
-                latest = cv2.cvtColor(np.asarray(sct.grab(region)), cv2.COLOR_BGRA2GRAY)
+                # OCR 耗时期间目标可能改变，输入前再次确认 ROI 像素未变。
+                latest = capture_gray(sct, region)
                 if not np.array_equal(gray, latest):
                     result["stable"] = False
                     result["reason"] = "frame_changed_before_click"
