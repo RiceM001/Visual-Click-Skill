@@ -12,6 +12,7 @@ description: Use when building or debugging Python automation that locates an im
 3. 用 `--template` 定位图片；目标缩放时配置 `template_scales`。多个模板候选默认阻止点击，用 `--evidence` 和 `template_occurrence` 选定目标。用 `--text` 定位确切文字；低对比度时将 `clahe` 加入 `ocr_preprocess`。`--screenshot` 和 `--live` 默认都不点击。 / Use `--template` for images and `template_scales` when their size varies. Multiple candidates block clicks until checked with `--evidence` and selected by `template_occurrence`. Use `--text` for exact OCR text and add `clahe` for low contrast. Saved screenshot and live modes both default to dry-run.
 4. 报告置信度、阈值、ROI、图片与屏幕框/中心及坐标假设。用 `--evidence` 保存带编号候选框的 ROI，再用 `ocr_occurrence` 选择重复文字。OCR 启用单字框定位词内子串；先跑原图，候选数量不足时继续尝试放大、二值化和反色。 / Report confidence, threshold, ROI, image/screen boxes and centers. Use `--evidence` to number candidate boxes before selecting repeated text with `ocr_occurrence`. OCR uses character boxes for substrings inside words, then preprocessing if raw input yields too few candidates.
 5. 仅在用户明确要求或配置允许时使用 `--live --execute`。先确认多帧稳定、目标在显示器及预期前台窗口内；Windows 上须启用 per-monitor DPI awareness。修改项目代码时保留可配置的阈值、ROI、偏移、延时和帧数。 / Use `--live --execute` only when explicitly requested or enabled. Check multi-frame stability, monitor bounds, expected foreground window, and Windows per-monitor DPI awareness. Keep thresholds, ROI, offset, interval, and frame count configurable.
+6. 目标可能移动时用 `--live --watch` 逐帧读取最新 `screen_bbox`，仅在 `matched: true` 时使用坐标；`watch_frames` 可限制帧数，`null` 表示持续观察。 / For moving targets, use `--live --watch` to read the current `screen_bbox` per frame; use coordinates only when `matched: true`. `watch_frames` bounds the stream, or `null` keeps observing.
 
 ## 坐标规则 / Coordinate rule
 
@@ -24,6 +25,7 @@ python skills/visual-target-check/scripts/locate.py --inspect
 python skills/visual-target-check/scripts/locate.py --config config.example.json --screenshot screenshot.png --template button.png
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --template button.png --evidence match.png
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "设置" --evidence text.png
+python skills/visual-target-check/scripts/locate.py --config config.example.json --live --watch --text "设置"
 # 真实点击 / Real click, after setting expected_window_title:
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "设置" --execute
 python -m unittest discover -s tests -v

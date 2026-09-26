@@ -350,7 +350,7 @@ def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path
 
 
 def run_live(target: np.ndarray | str, config: dict, execute: bool,
-             evidence: Path | None = None) -> dict:
+             evidence: Path | None = None, on_frame=None) -> dict:
     if execute and sys.platform != "win32":
         raise ValueError("--execute is supported on Windows only")
     validate_config(config)
@@ -359,10 +359,12 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     count = config["stable_frames"]
     interval = config["frame_interval_ms"]
     shift = config["max_center_shift_px"]
+    limit = config.get("watch_frames") if on_frame else count
     if (type(count) is not int or count < 1
             or type(interval) not in (int, float) or not math.isfinite(interval) or interval < 0
-            or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0):
-        raise ValueError("invalid stable_frames, frame_interval_ms, or max_center_shift_px")
+            or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0
+            or (limit is not None and (type(limit) is not int or limit < 1))):
+        raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, or watch_frames")
     set_dpi_awareness()
     from mss import MSS
 
@@ -374,8 +376,10 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                     "screen_origin": [region["left"], region["top"]]}
     engine = ocr_engine() if isinstance(target, str) else None
     first_center = None
+    streak = 0
     with MSS() as sct:
-        for frame in range(count):
+        frame = 0
+        while limit is None or frame < limit:
             if frame:
                 time.sleep(interval / 1000)
             try:
@@ -385,23 +389,31 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             gray = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
             result = (locate_text(gray, target, local_config, engine)
                       if isinstance(target, str) else locate(gray, target, local_config))
-            if not result["matched"]:
-                result["stable"] = False
+            moved = False
+            if result["matched"]:
+                center = result["screen_center"]
+                moved = first_center is not None and math.dist(center, first_center) > shift
+                if moved:
+                    streak = 0
+                first_center = center if first_center is None or moved else first_center
+                streak += 1
+            else:
+                first_center = None
+                streak = 0
+            result["stable"] = streak >= count
+            result["clicked"] = False
+            if execute and result["stable"]:
+                result["click_point"] = execute_click(result, config, sct.monitors)
+                result["clicked"] = True
+            if on_frame:
+                result["frame"] = frame + 1
+                on_frame(result)
+            frame += 1
+            if result["clicked"] or (not on_frame and (not result["matched"] or moved)):
                 break
-            center = result["screen_center"]
-            if first_center and math.dist(center, first_center) > shift:
-                result["stable"] = False
-                break
-            first_center = first_center or center
-        else:
-            result["stable"] = True
-        result["clicked"] = False
         if evidence is not None:
             save_evidence(gray, result, local_config, evidence)
             result["evidence"] = str(evidence)
-        if execute and result["stable"]:
-            result["click_point"] = execute_click(result, config, sct.monitors)
-            result["clicked"] = True
     return result
 
 
@@ -417,23 +429,27 @@ def main() -> int:
     target_group.add_argument("--text", help="locate exact text using OCR")
     parser.add_argument("--evidence", type=Path, help="save annotated ROI image")
     parser.add_argument("--execute", action="store_true", help="click only in live mode")
+    parser.add_argument("--watch", action="store_true", help="stream fresh live positions as JSON Lines")
     args = parser.parse_args()
     try:
         if args.inspect:
-            if args.execute or args.evidence:
-                raise ValueError("--inspect cannot be combined with --execute or --evidence")
+            if args.execute or args.evidence or args.watch:
+                raise ValueError("--inspect cannot be combined with --execute, --evidence, or --watch")
             print(json.dumps(inspect_desktop()))
             return 0
         if args.config is None or (args.template is None and args.text is None):
             raise ValueError("--config and either --template or --text are required")
         if args.execute and not args.live:
             raise ValueError("--execute requires --live")
+        if args.watch and not args.live:
+            raise ValueError("--watch requires --live")
         config = json.loads(args.config.read_text(encoding="utf-8"))
         target = args.text if args.text is not None else cv2.imread(str(args.template), cv2.IMREAD_GRAYSCALE)
         if target is None:
             raise ValueError("cannot read template")
         if args.live:
-            result = run_live(target, config, args.execute, args.evidence)
+            emit = (lambda item: print(json.dumps(item), flush=True)) if args.watch else None
+            result = run_live(target, config, args.execute, args.evidence, emit)
         else:
             screenshot = cv2.imread(str(args.screenshot), cv2.IMREAD_GRAYSCALE)
             if screenshot is None:
@@ -443,10 +459,15 @@ def main() -> int:
             if args.evidence is not None:
                 save_evidence(screenshot, result, config, args.evidence)
                 result["evidence"] = str(args.evidence)
+    except KeyboardInterrupt:
+        return 0
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result))
+    if not args.watch:
+        print(json.dumps(result))
+    if args.watch:
+        return 0
     return 0 if result["matched"] and result.get("stable", True) else 2
 
 

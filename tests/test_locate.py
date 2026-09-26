@@ -139,6 +139,45 @@ class LocateTests(unittest.TestCase):
         self.assertFalse(result["clicked"])
         click.assert_not_called()
 
+    def test_watch_tracks_movement_and_clicks_latest_stable_frame(self):
+        template = np.random.default_rng(31).integers(0, 256, (8, 8), dtype=np.uint8)
+        frames = []
+        for x in (10, 20, None, 25, 25):
+            gray = np.zeros((40, 50), dtype=np.uint8)
+            if x is not None:
+                gray[10:18, x:x + 8] = template
+            frames.append(np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2))
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [100, 200],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "stable_frames": 2, "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "watch_frames": len(frames)}
+
+        class FakeMss:
+            monitors = [None, {"left": 0, "top": 0, "width": 1000, "height": 1000}]
+
+            def __enter__(self):
+                self.frames = iter(frames)
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def grab(self, _):
+                return next(self.frames)
+
+        observed = []
+        with (mock.patch.object(module.sys, "platform", "win32"),
+              mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "execute_click", side_effect=lambda result, *_: result["screen_center"]) as click):
+            result = module.run_live(template, config, execute=True, on_frame=observed.append)
+        self.assertEqual([item["frame"] for item in observed], [1, 2, 3, 4, 5])
+        self.assertEqual([item["screen_center"] for item in observed if item["matched"]],
+                         [[114.0, 214.0], [124.0, 214.0], [129.0, 214.0], [129.0, 214.0]])
+        self.assertEqual([item["stable"] for item in observed], [False, False, False, False, True])
+        self.assertEqual(result["click_point"], [129.0, 214.0])
+        click.assert_called_once()
+
     def test_execute_checks_window_before_click(self):
         result = {"matched": True, "stable": True, "screen_center": [-1850, 150]}
         config = {"expected_window_title": "Notepad", "click_offset": [2, -3]}

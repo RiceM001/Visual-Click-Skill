@@ -20,6 +20,7 @@ python skills/visual-target-check/scripts/locate.py --inspect
 python skills/visual-target-check/scripts/locate.py --config config.example.json --screenshot path/to/screenshot.png --template path/to/button.png
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --template path/to/button.png --evidence match.png
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "设置" --evidence text.png
+python skills/visual-target-check/scripts/locate.py --config config.example.json --live --watch --text "设置"
 python -m unittest discover -s tests -v
 ```
 
@@ -55,6 +56,10 @@ Edit `config.example.json` for your screenshot. `roi` is `[left, top, width, hei
 实时模式中，`screen_origin + roi` 是物理屏幕上的截图区域；`physical_pixels_per_image_pixel` 必须为 `1.0`。`stable_frames`、`frame_interval_ms` 和 `max_center_shift_px` 控制多帧稳定性。将 `expected_window_title` 改为目标窗口标题的独特片段，再执行真实点击：
 
 In live mode, `screen_origin + roi` defines the physical capture region; the scale must be `1.0`. `stable_frames`, `frame_interval_ms`, and `max_center_shift_px` control stability. Set `expected_window_title` to a distinctive part of the target window title before clicking:
+
+`--live --watch` 持续重截 ROI，每帧输出一行 JSON，包括最新的 `screen_bbox`、`screen_center`、`matched`、`stable` 和帧号；目标移动后坐标随帧更新，丢失时稳定计数清零。`watch_frames: null` 持续运行到 Ctrl+C；设置正整数可限制帧数。只有 `--watch --execute` 会在最新位置连续稳定后点击一次并退出；`matched: false` 时不要使用候选坐标。`--evidence` 在达到帧数上限或点击后保存最后一帧。
+
+`--live --watch` recaptures the ROI and emits one JSON line per frame with the current `screen_bbox`, `screen_center`, `matched`, `stable`, and frame number. Positions follow moving targets; loss resets stability. `watch_frames: null` runs until Ctrl+C; a positive integer limits frames. `--watch --execute` clicks once after fresh stable matches, then exits. Ignore candidate coordinates when `matched: false`. `--evidence` saves the final frame after the frame limit or a click.
 
 ```bash
 python skills/visual-target-check/scripts/locate.py --config config.example.json --live --template path/to/button.png --execute

@@ -9,6 +9,7 @@
   "template_max_candidates": 100,
   "stable_frames": 2,
   "frame_interval_ms": 120,
+  "watch_frames": null,
   "max_center_shift_px": 3,
   "click_offset": [0, 0],
   "expected_window_title": "TODO: target window title",
