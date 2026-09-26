@@ -37,7 +37,18 @@ def box_iou(a: list[float], b: list[float]) -> float:
     return intersection / (a[2] * a[3] + b[2] * b[3] - intersection)
 
 
-def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
+def template_variant(image: np.ndarray, method: str, config: dict) -> np.ndarray:
+    if method == "gray":
+        return image
+    if method == "clahe":
+        return cv2.createCLAHE(clipLimit=config["template_clahe_clip_limit"],
+                               tileGridSize=(config["template_clahe_grid_size"],) * 2).apply(image)
+    if method == "otsu":
+        return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    return cv2.Canny(image, config["template_canny_low"], config["template_canny_high"])
+
+
+def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, method: str) -> dict:
     validate_config(config, screenshot.shape)
     left, top, width, height = config["roi"]
     origin = config["screen_origin"]
@@ -58,7 +69,7 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
     if np.std(template) == 0:
         raise ValueError("constant template cannot be matched reliably")
 
-    crop = screenshot[top:top + height, left:left + width]
+    crop = template_variant(screenshot[top:top + height, left:left + width], method, config)
     best = None
     candidates = []
     for factor in scales:
@@ -69,6 +80,7 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
         scaled = (template if scaled_width == template.shape[1] and scaled_height == template.shape[0]
                   else cv2.resize(template, (scaled_width, scaled_height), interpolation=(
                       cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC)))
+        scaled = template_variant(scaled, method, config)
         if np.std(scaled) == 0:
             continue
         scores = cv2.matchTemplate(crop, scaled, cv2.TM_CCOEFF_NORMED)
@@ -83,11 +95,13 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
                     "screen_bbox": [origin[0] + image_bbox[0] * scale,
                                     origin[1] + image_bbox[1] * scale,
                                     scaled_width * scale, scaled_height * scale],
-                    "template_scale": factor}
+                    "template_scale": factor, "preprocess": method}
 
         _, confidence, _, point = cv2.minMaxLoc(scores)
         if best is None or confidence > best["confidence"]:
             best = candidate(point, confidence)
+        if confidence < threshold:
+            continue
         peaks = (scores >= threshold) & (scores == cv2.dilate(scores, np.ones((3, 3), np.uint8)))
         ys, xs = np.where(peaks)
         candidates.extend(candidate((int(x), int(y)), scores[y, x]) for y, x in zip(ys, xs))
@@ -120,6 +134,38 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
     return {**selected, "matched": True, "ambiguous": False, "candidate_limit_reached": False,
             "roi": config["roi"],
             "matches": matches}
+
+
+def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
+    methods = config.get("template_preprocess", ["gray"])
+    if (not isinstance(methods, list) or not methods
+            or any(type(method) is not str or method not in ("gray", "clahe", "otsu", "edges")
+                   for method in methods)
+            or len(methods) != len(set(methods))
+            or "clahe" in methods and (type(config.get("template_clahe_clip_limit")) not in (int, float)
+                                       or not math.isfinite(config["template_clahe_clip_limit"])
+                                       or config["template_clahe_clip_limit"] <= 0
+                                       or type(config.get("template_clahe_grid_size")) is not int
+                                       or config["template_clahe_grid_size"] < 1)
+            or "edges" in methods and (type(config.get("template_canny_low")) is not int
+                                       or type(config.get("template_canny_high")) is not int
+                                       or not 0 <= config["template_canny_low"] < config["template_canny_high"] <= 255)):
+        raise ValueError("invalid template preprocessing configuration")
+    fallback = None
+    for method in methods:
+        try:
+            result = locate_once(screenshot, template, config, method)
+        except ValueError as exc:
+            if str(exc) != "all template scales are larger than roi or constant":
+                raise
+            continue
+        if result["matched"] or result["ambiguous"]:
+            return result
+        if fallback is None or result["confidence"] > fallback["confidence"]:
+            fallback = result
+    if fallback is None:
+        raise ValueError("all template scales are larger than roi or constant")
+    return fallback
 
 
 def ocr_engine():

@@ -74,6 +74,39 @@ class LocateTests(unittest.TestCase):
         self.assertTrue(module.locate(screenshot, template, config)["candidate_limit_reached"])
         self.assertFalse(module.locate(screenshot, template, config)["matched"])
 
+    def test_edge_fallback_recovers_target_under_changed_lighting(self):
+        y, x = np.mgrid[0:24, 0:24]
+        circle = (x - 12) ** 2 + (y - 12) ** 2 < 36
+        template = np.full((24, 24), 100, dtype=np.uint8)
+        template[circle] = 200
+        _, screen_x = np.mgrid[0:90, 0:100]
+        screenshot = np.clip(-80 + 4 * screen_x, 0, 255).astype(np.uint8)
+        screenshot[35:59, 42:66][circle] = 200
+        config = {"roi": [0, 0, 100, 90], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.8,
+                  "template_preprocess": ["gray", "edges"],
+                  "template_canny_low": 40, "template_canny_high": 100}
+        result = module.locate(screenshot, template, config)
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["preprocess"], "edges")
+        self.assertEqual(result["screen_center"], [54.0, 47.0])
+
+    def test_fast_path_skips_enhancement_and_low_score_peak_scan(self):
+        rng = np.random.default_rng(81)
+        screenshot = rng.integers(0, 256, (60, 60), dtype=np.uint8)
+        template = screenshot[10:20, 15:25].copy()
+        config = {"roi": [0, 0, 60, 60], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.999,
+                  "template_preprocess": ["gray", "edges"],
+                  "template_canny_low": 40, "template_canny_high": 100}
+        with mock.patch.object(module.cv2, "Canny") as canny:
+            self.assertTrue(module.locate(screenshot, template, config)["matched"])
+            canny.assert_not_called()
+        with mock.patch.object(module.cv2, "dilate") as dilate:
+            self.assertFalse(module.locate(np.zeros((60, 60), dtype=np.uint8), template,
+                                           {**config, "template_preprocess": ["gray"]})["matched"])
+            dilate.assert_not_called()
+
     def test_live_dry_run_uses_roi_and_never_clicks(self):
         rng = np.random.default_rng(8)
         gray = rng.integers(0, 256, (40, 40), dtype=np.uint8)
