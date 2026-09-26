@@ -81,4 +81,3 @@ Live mode captures only the ROI and never activates a window. `--execute` is Win
 ## 许可证 / License
 
 MIT，见 [LICENSE](LICENSE)。 / MIT; see [LICENSE](LICENSE).
-

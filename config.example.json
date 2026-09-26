@@ -1,0 +1,17 @@
+{
+  "roi": [100, 40, 200, 100],
+  "screen_origin": [0, 0],
+  "physical_pixels_per_image_pixel": 1.0,
+  "threshold": 0.9,
+  "stable_frames": 2,
+  "frame_interval_ms": 120,
+  "max_center_shift_px": 3,
+  "click_offset": [0, 0],
+  "expected_window_title": "TODO: target window title",
+  "ocr_threshold": 0.75,
+  "ocr_occurrence": null,
+  "ocr_preprocess": ["raw", "upscale", "otsu", "adaptive", "invert"],
+  "ocr_scale": 2,
+  "ocr_adaptive_block_size": 31,
+  "ocr_adaptive_c": 11
+}
