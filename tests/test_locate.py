@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills/visual-target-check/scripts/locate.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "skills/visual-click-skill/scripts/locate.py"
 spec = importlib.util.spec_from_file_location("locate", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

@@ -1,5 +1,5 @@
 ---
-name: visual-target-check
+name: visual-click-skill
 description: 用于 Windows 桌面或应用窗口中的实时图片、文字定位与安全单击、双击；处理 ROI、DPI、多显示器坐标和目标移动。
 ---
 
@@ -18,15 +18,15 @@ description: 用于 Windows 桌面或应用窗口中的实时图片、文字定�
 先按当前窗口修改 config.example.json 中的 roi、roi_relative_to、expected_window_title：
 
 ~~~bash
-python skills/visual-target-check/scripts/locate.py --inspect
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "代理"
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "代理" --execute
+python skills/visual-click-skill/scripts/locate.py --inspect
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理"
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理" --execute
 ~~~
 
 桌面双击需将 target_surface 改为 desktop、click_count 改为 2，并设定桌面 ROI：
 
 ~~~bash
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "1.6.3" --execute
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "1.6.3" --execute
 ~~~
 
 识别图片时把 --text 替换为 --template 模板路径。对已保存截图使用 --screenshot。验证命令：python -m unittest discover -s tests -q。

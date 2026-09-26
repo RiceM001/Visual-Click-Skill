@@ -15,17 +15,17 @@
 
 ~~~bash
 python -m pip install -r requirements.txt
-python skills/visual-target-check/scripts/locate.py --inspect
+python skills/visual-click-skill/scripts/locate.py --inspect
 ~~~
 
 按当前屏幕修改 config.example.json 中的 ROI、目标所在位置与阈值，再执行：
 
 ~~~bash
 # 先识别，输出目标框、置信度和屏幕坐标
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "代理"
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理"
 
 # 用户已授权点击时，一次命令完成连续帧校验和单击
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "代理" --execute
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理" --execute
 ~~~
 
 --live 默认检查连续稳定帧后返回一次结果。只有需要持续观察移动目标时才加 --watch；无需为一次点击先运行持续观察，再启动第二个识别进程。
@@ -50,10 +50,10 @@ roi 格式为 [左, 上, 宽, 高]。实时模式中 physical_pixels_per_image_p
 
 ~~~bash
 # 桌面文件夹：先在配置中选 desktop 和 click_count=2
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --text "1.6.3" --execute
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "1.6.3" --execute
 
 # 图片模板：先在配置中填写目标窗口标题和窗口相对 ROI
-python skills/visual-target-check/scripts/locate.py --config config.example.json --live --template path/to/button.png --execute
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --template path/to/button.png --execute
 ~~~
 
 ## 🔎 识别不稳时
@@ -66,10 +66,10 @@ python skills/visual-target-check/scripts/locate.py --config config.example.json
 
 ## 📦 安装技能
 
-将 skills/visual-target-check 复制到代理的技能目录，或运行：
+将 skills/visual-click-skill 复制到代理的技能目录，或运行：
 
 ~~~bash
-npx skills add RiceM001/Visual-Click-Skill --skill visual-target-check
+npx skills add RiceM001/Visual-Click-Skill --skill visual-click-skill
 ~~~
 
 技能文件遵循 [Agent Skills 规范](https://agentskills.io/specification)。
