@@ -30,6 +30,20 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 
 --live 默认检查连续稳定帧后返回一次结果。只有需要持续观察移动目标时才加 --watch；无需为一次点击先运行持续观察，再启动第二个识别进程。
 
+## ⏱️ 等待动态目标
+
+示例配置最多等待 5 秒。页面加载或目标移动时会重试，满足稳定帧条件后立即返回；需要点击时再加 --execute。也可通过命令覆盖等待时间：
+
+~~~bash
+python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "确认" --timeout 8
+~~~
+
+--timeout 对应 timeout_seconds，0 保持原有帧数限制；与 --watch 同用时限制观察总时长，watch_frames 仍可提前结束观察。计时不含 OCR 模型加载，单次识别不能强行中断，但识别或复核结束时若已超时不会点击。超时返回 timed_out=true、reason=timeout 和退出码 2。
+
+实时结果包含 frames、elapsed_ms、cache_hits，分别表示已处理帧数、定位循环耗时和省去的重复识别次数。--watch 在等待间隔内超时，会追加一条最后帧的超时状态。
+
+截图、模板和 --evidence 输出支持中文路径；路径含空格时用引号包裹。
+
 ## 📍 选择截图区域
 
 | 场景 | 关键配置 | 坐标含义 |
@@ -83,6 +97,12 @@ npx skills add RiceM001/Visual-Click-Skill --skill visual-click-skill
 ~~~bash
 python -m unittest discover -s tests -q
 ~~~
+
+## 🔗 参考项目
+
+- [Airtest](https://github.com/AirtestProject/Airtest/blob/master/airtest/core/api.py)：参考 wait 的超时和轮询间隔设计，加入动态目标等待。
+- [PyScreeze](https://github.com/asweigart/pyscreeze/blob/master/pyscreeze/__init__.py)：参考重复截图搜索；本项目结合稳定帧和点击前复核。
+- [PyAutoGUI](https://github.com/asweigart/pyautogui/blob/master/docs/screenshot.rst)：参考 ROI 搜索和候选框定位思路，继续复用局部截图以减少计算。
 
 ## 📄 许可证
 

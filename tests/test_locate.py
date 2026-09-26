@@ -568,6 +568,121 @@ class LocateTests(unittest.TestCase):
               mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)})):
             self.assertIsNone(module.inspect_desktop()["foreground_window"])
 
+    def test_timed_wait_retries_movement_and_uses_cache(self):
+        template = np.random.default_rng(91).integers(0, 256, (8, 8), dtype=np.uint8)
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "stable_frames": 2, "frame_interval_ms": 100, "max_center_shift_px": 0,
+                  "timeout_seconds": 1, "template_preprocess": ["gray"]}
+        for positions, timeout, expected in [([None, 10, 20, 20], 1, True),
+                                             ([None, None, None], 0.25, False)]:
+            frames = []
+            observed = []
+            for x in positions:
+                gray = np.zeros((40, 50), dtype=np.uint8)
+                if x is not None:
+                    gray[10:18, x:x + 8] = template
+                frames.append(module.cv2.cvtColor(gray, module.cv2.COLOR_GRAY2BGRA))
+            clock = [0.0]
+            capture = mock.MagicMock()
+            capture.__enter__.return_value = capture
+            capture.grab.side_effect = frames
+            with (self.subTest(timeout=timeout),
+                  mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
+                  mock.patch.object(module, "set_dpi_awareness"),
+                  mock.patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+                  mock.patch.object(module.time, "sleep", side_effect=lambda t: clock.__setitem__(0, clock[0] + t)),
+                  mock.patch.object(module, "send_click") as click):
+                result = module.run_live(template, {**config, "timeout_seconds": timeout}, execute=False,
+                                         on_frame=None if expected else observed.append)
+            self.assertEqual(result["stable"], expected)
+            self.assertEqual(result["frames"], len(frames))
+            self.assertGreater(result["cache_hits"], 0)
+            click.assert_not_called()
+            if expected:
+                self.assertEqual(result["screen_center"], [24.0, 14.0])
+            else:
+                self.assertTrue(result["timed_out"])
+                self.assertEqual(result["elapsed_ms"], 250)
+                self.assertTrue(observed[-1]["timed_out"])
+
+    def test_slow_recognition_exceeding_timeout_never_clicks(self):
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "stable_frames": 1, "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "timeout_seconds": 1}
+        clock = [0.0]
+        capture = mock.MagicMock()
+        capture.__enter__.return_value = capture
+        capture.grab.side_effect = [np.zeros((40, 50, 4), dtype=np.uint8),
+                                    np.ones((40, 50, 4), dtype=np.uint8)]
+        calls = []
+
+        def slow_locate(*_):
+            calls.append(1)
+            if len(calls) == 2:
+                clock[0] = 2.0
+            return {"matched": True, "screen_center": [20, 20]}
+
+        with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
+              mock.patch.object(module.sys, "platform", "win32"),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+              mock.patch.object(module, "locate", side_effect=slow_locate),
+              mock.patch.object(module, "execute_click") as click):
+            result = module.run_live(np.ones((8, 8), dtype=np.uint8), config, execute=True)
+        self.assertEqual(result["reason"], "timeout")
+        self.assertFalse(result["stable"])
+        self.assertEqual(result["frames"], 2)
+        click.assert_not_called()
+
+    def test_unicode_image_paths_and_invalid_images(self):
+        config = {"roi": [0, 0, 80, 40]}
+        result = {"matched": True, "confidence": 0.99, "image_bbox": [10, 10, 20, 10]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "中文目录" / "定位结果.png"
+            module.save_evidence(np.zeros((40, 80), dtype=np.uint8), result, config, path)
+            image = module.read_gray(path)
+            self.assertEqual(image.shape, (40, 80))
+            self.assertTrue(image[10, 10])
+            for data in (b"", b"not an image"):
+                path.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "cannot read image"):
+                    module.read_gray(path)
+
+    def test_timed_wait_clicks_once_unless_final_capture_expires(self):
+        template = np.random.default_rng(92).integers(0, 256, (8, 8), dtype=np.uint8)
+        gray = np.zeros((40, 50), dtype=np.uint8)
+        gray[10:18, 20:28] = template
+        found = module.cv2.cvtColor(gray, module.cv2.COLOR_GRAY2BGRA)
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "stable_frames": 1, "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "timeout_seconds": 1, "template_preprocess": ["gray"]}
+        for expire in (False, True):
+            clock, grabs = [0.0], []
+            capture = mock.MagicMock()
+            capture.__enter__.return_value = capture
+
+            def grab(_):
+                grabs.append(1)
+                if expire and len(grabs) == 4:
+                    clock[0] = 2.0
+                return np.zeros_like(found) if len(grabs) == 1 else found
+
+            capture.grab.side_effect = grab
+            with (self.subTest(expire=expire),
+                  mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
+                  mock.patch.object(module.sys, "platform", "win32"),
+                  mock.patch.object(module, "set_dpi_awareness"),
+                  mock.patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+                  mock.patch.object(module.time, "sleep"),
+                  mock.patch.object(module, "execute_click", return_value=[24, 14]) as click):
+                result = module.run_live(template, config, execute=True)
+            self.assertEqual(result["clicked"], not expire)
+            self.assertEqual(click.call_count, 0 if expire else 1)
+            self.assertEqual(result["frames"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

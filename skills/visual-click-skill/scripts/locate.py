@@ -473,8 +473,19 @@ def save_evidence(screenshot: np.ndarray, result: dict, config: dict, path: Path
     cv2.putText(canvas, f"confidence={result['confidence']:.3f}", (4, min(height - 4, 18)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(path), canvas):
+    success, encoded = cv2.imencode(path.suffix, canvas)
+    if not success:
         raise OSError(f"cannot write evidence: {path}")
+    encoded.tofile(path)  # 用文件字节读写支持 Windows 中文路径。
+
+
+def read_gray(path: Path) -> np.ndarray:
+    """OpenCV 负责解码，numpy 负责路径读写，兼容中文文件名。"""
+    data = np.fromfile(path, dtype=np.uint8)
+    image = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE) if data.size else None
+    if image is None:
+        raise ValueError(f"cannot read image: {path}")
+    return image
 
 
 def capture_gray(sct, region: dict) -> np.ndarray:
@@ -498,13 +509,15 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     interval = config["frame_interval_ms"]
     shift = config["max_center_shift_px"]
     relative_to = config.get("roi_relative_to", "screen")
-    limit = config.get("watch_frames") if on_frame else count + bool(execute)
+    timeout = config.get("timeout_seconds", 0)
+    limit = config.get("watch_frames") if on_frame else (None if timeout else count + bool(execute))
     if (type(count) is not int or count < 1
             or type(interval) not in (int, float) or not math.isfinite(interval) or interval < 0
             or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0
             or (limit is not None and (type(limit) is not int or limit < 1))
+            or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0
             or relative_to not in ("screen", "window")):
-        raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, watch_frames, or roi_relative_to")
+        raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, watch_frames, timeout_seconds, or roi_relative_to")
     if relative_to == "window" and config.get("target_surface", "window") != "window":
         raise ValueError("window-relative ROI requires target_surface = window")
     set_dpi_awareness()
@@ -520,11 +533,19 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     first_center = None
     streak = 0
     ready_to_click = False
+    # 模型加载后开始计时；单次 OCR 不强行中断，但超时后绝不发送点击。
+    started = time.monotonic()
+    deadline = started + timeout if timeout else math.inf
+    cache_hits = 0
+    timed_out = False
     with MSS() as sct:
         frame = 0
         while limit is None or frame < limit:
             if frame:
-                time.sleep(interval / 1000)
+                time.sleep(min(interval / 1000, max(0, deadline - time.monotonic())))
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
             origin = config["screen_origin"]
             if relative_to == "window":
                 title, (window_left, window_top, window_right, window_bottom) = foreground_window()
@@ -543,6 +564,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             # 原点和像素都不变才复用结果，窗口移动后必须重新映射屏幕坐标。
             if region == previous_region and np.array_equal(gray, previous_gray):
                 result = previous_result.copy()
+                cache_hits += 1
             else:
                 result = (locate_text(gray, target, local_config, engine, ocr_state)
                           if isinstance(target, str) else locate(gray, target, local_config, prepared))
@@ -563,10 +585,14 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             result["clicked"] = False
             if relative_to == "window":
                 result["capture_window_bounds"] = [window_left, window_top, window_right, window_bottom]
-            if execute and result["stable"] and ready_to_click and not moved:
+            timed_out = time.monotonic() >= deadline
+            if execute and result["stable"] and ready_to_click and not moved and not timed_out:
                 # OCR 耗时期间目标可能改变，输入前再次确认 ROI 像素未变。
                 latest = capture_gray(sct, region)
-                if not np.array_equal(gray, latest):
+                timed_out = time.monotonic() >= deadline
+                if timed_out:
+                    result["stable"] = False
+                elif not np.array_equal(gray, latest):
                     result["stable"] = False
                     result["reason"] = "frame_changed_before_click"
                     first_center, streak = None, 0
@@ -575,12 +601,24 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                     result["clicked"] = True
                     result["click_count"] = config.get("click_count", 1)
             ready_to_click = result["stable"]
+            if timed_out:
+                result.update(stable=False, timed_out=True, reason="timeout")
+            result.update(frames=frame + 1, cache_hits=cache_hits,
+                          elapsed_ms=round((time.monotonic() - started) * 1000, 3))
             if on_frame:
                 result["frame"] = frame + 1
                 on_frame(result)
             frame += 1
-            if result["clicked"] or (not on_frame and (not result["matched"] or moved)):
+            if (timed_out or result["clicked"]
+                    or not on_frame and not execute and result["stable"]
+                    or not on_frame and not timeout and (not result["matched"] or moved)):
                 break
+        # 等待间隔内到达截止时间时，最后一帧仍用于提供诊断信息。
+        if timed_out and not result.get("timed_out"):
+            result = {**result, "stable": False, "timed_out": True, "reason": "timeout",
+                      "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
+            if on_frame:
+                on_frame(result)
         if evidence is not None:
             save_evidence(gray, result, local_config, evidence)
             result["evidence"] = str(evidence)
@@ -600,11 +638,12 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path, help="保存带识别框的 ROI 图片")
     parser.add_argument("--execute", action="store_true", help="在实时模式下执行点击")
     parser.add_argument("--watch", action="store_true", help="逐帧输出最新位置")
+    parser.add_argument("--timeout", type=float, help="实时等待秒数；0 使用原有帧数限制")
     args = parser.parse_args()
     try:
         if args.inspect:
-            if args.execute or args.evidence or args.watch:
-                raise ValueError("--inspect cannot be combined with --execute, --evidence, or --watch")
+            if args.execute or args.evidence or args.watch or args.timeout is not None:
+                raise ValueError("--inspect cannot be combined with --execute, --evidence, --watch, or --timeout")
             print(json.dumps(inspect_desktop()))
             return 0
         if args.config is None or (args.template is None and args.text is None):
@@ -613,17 +652,17 @@ def main() -> int:
             raise ValueError("--execute requires --live")
         if args.watch and not args.live:
             raise ValueError("--watch requires --live")
+        if args.timeout is not None and not args.live:
+            raise ValueError("--timeout requires --live")
         config = json.loads(args.config.read_text(encoding="utf-8"))
-        target = args.text if args.text is not None else cv2.imread(str(args.template), cv2.IMREAD_GRAYSCALE)
-        if target is None:
-            raise ValueError("cannot read template")
+        if args.timeout is not None:
+            config["timeout_seconds"] = args.timeout
+        target = args.text if args.text is not None else read_gray(args.template)
         if args.live:
             emit = (lambda item: print(json.dumps(item), flush=True)) if args.watch else None
             result = run_live(target, config, args.execute, args.evidence, emit)
         else:
-            screenshot = cv2.imread(str(args.screenshot), cv2.IMREAD_GRAYSCALE)
-            if screenshot is None:
-                raise ValueError("cannot read screenshot")
+            screenshot = read_gray(args.screenshot)
             result = (locate_text(screenshot, target, config)
                       if isinstance(target, str) else locate(screenshot, target, config))
             if args.evidence is not None:
@@ -631,7 +670,7 @@ def main() -> int:
                 result["evidence"] = str(args.evidence)
     except KeyboardInterrupt:
         return 2 if args.execute else 0
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, cv2.error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if not args.watch:
@@ -639,7 +678,7 @@ def main() -> int:
     if args.execute:
         return 0 if result.get("clicked", False) else 2
     if args.watch:
-        return 0
+        return 2 if result.get("timed_out", False) else 0
     return 0 if result["matched"] and result.get("stable", True) else 2
 
 
