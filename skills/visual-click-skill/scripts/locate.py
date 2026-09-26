@@ -2,6 +2,7 @@
 
 import argparse
 import ctypes
+import hashlib
 import json
 import math
 import sys
@@ -204,7 +205,7 @@ def ocr_engine():
                             "Global.return_single_char_box": True})
 
 
-def ocr_variants(crop: np.ndarray, config: dict):
+def ocr_variants(crop: np.ndarray, config: dict, state: dict | None = None):
     setting = config.get("ocr_preprocess", "auto")
     methods = (["raw", "upscale", "clahe", "otsu", "adaptive", "invert"]
                if setting == "auto" else setting)
@@ -221,25 +222,34 @@ def ocr_variants(crop: np.ndarray, config: dict):
             or "clahe" in methods and (type(clip) not in (int, float) or not math.isfinite(clip)
                                        or clip <= 0 or type(grid) is not int or grid < 1)):
         raise ValueError("invalid OCR preprocessing configuration")
+    if setting == "auto" and state is not None and state.get("preferred") in methods[1:]:
+        preferred = state["preferred"]
+        methods = ["raw", preferred] + [method for method in methods[1:] if method != preferred]
     enlarged = None
+    seen = set()
     for method in methods:
         if method == "raw":
-            yield method, crop, 1
+            image, image_scale = crop, 1
         else:
             if enlarged is None:
                 enlarged = cv2.resize(crop, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
             if method == "upscale":
-                yield method, enlarged, factor
+                image = enlarged
             elif method == "clahe":
-                yield method, cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid)).apply(enlarged), factor
+                image = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid)).apply(enlarged)
             elif method == "otsu":
-                yield method, cv2.threshold(enlarged, 0, 255,
-                                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], factor
+                image = cv2.threshold(enlarged, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
             elif method == "adaptive":
-                yield method, cv2.adaptiveThreshold(enlarged, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                                     cv2.THRESH_BINARY, block, adaptive_c), factor
+                image = cv2.adaptiveThreshold(enlarged, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                              cv2.THRESH_BINARY, block, adaptive_c)
             else:
-                yield method, cv2.bitwise_not(enlarged), factor
+                image = cv2.bitwise_not(enlarged)
+            image_scale = factor
+        # Identical pixels and shape yield the same OCR input; do not infer twice.
+        key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image), digest_size=16).digest())
+        if key not in seen:
+            seen.add(key)
+            yield method, image, image_scale
 
 
 def image_box(polygon, factor: int, roi: list[int]) -> list[float]:
@@ -261,7 +271,8 @@ def text_result(text: str, score: float, box: list[float], config: dict, method:
             "preprocess": method}
 
 
-def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) -> dict:
+def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None,
+                state: dict | None = None) -> dict:
     validate_config(config, screenshot.shape)
     if not isinstance(target, str) or not target.strip():
         raise ValueError("--text must be non-empty")
@@ -276,7 +287,7 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
     wanted = "".join(target.casefold().split())
     recognized = []
     partial_matches = []
-    for method, prepared, factor in ocr_variants(crop, config):
+    for method, prepared, factor in ocr_variants(crop, config, state):
         output = engine(cv2.cvtColor(prepared, cv2.COLOR_GRAY2BGR), return_word_box=True)
         matches = []
         lines = []
@@ -318,6 +329,8 @@ def locate_text(screenshot: np.ndarray, target: str, config: dict, engine=None) 
             selected = matches[occurrence - 1] if occurrence is not None and occurrence <= len(matches) else None
             if occurrence is None and len(matches) == 1:
                 selected = matches[0]
+            if selected is not None and state is not None:
+                state["preferred"] = method
             return {**(selected or {"confidence": 0.0, "image_bbox": None,
                                     "screen_bbox": None, "image_center": None, "screen_center": None}),
                     "matched": selected is not None, "ambiguous": len(matches) > 1 and occurrence is None,
@@ -419,6 +432,9 @@ def execute_click(result: dict, config: dict, monitors: list) -> list[int]:
         title, (left, top, right, bottom) = foreground_window()
         if title_expected.casefold() not in title.casefold() or not (left <= x < right and top <= y < bottom):
             raise ValueError("target is outside the expected foreground window")
+        if (result.get("capture_window_bounds") is not None
+                and result["capture_window_bounds"] != [left, top, right, bottom]):
+            raise ValueError("window moved after capture; locate again")
     for index in range(count):
         if index:
             time.sleep(interval / 1000)
@@ -493,6 +509,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
 
     left, top, width, height = config["roi"]
     engine = ocr_engine() if isinstance(target, str) else None
+    ocr_state = {}
     prepared = None if isinstance(target, str) else {}
     previous_region = None
     previous_gray = None
@@ -527,7 +544,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             if region == previous_region and np.array_equal(gray, previous_gray):
                 result = previous_result.copy()
             else:
-                result = (locate_text(gray, target, local_config, engine)
+                result = (locate_text(gray, target, local_config, engine, ocr_state)
                           if isinstance(target, str) else locate(gray, target, local_config, prepared))
                 previous_region, previous_gray, previous_result = region, gray, result.copy()
             moved = False
@@ -543,10 +560,19 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                 streak = 0
             result["stable"] = streak >= count
             result["clicked"] = False
-            if execute and result["stable"] and ready_to_click:
-                result["click_point"] = execute_click(result, config, sct.monitors)
-                result["clicked"] = True
-                result["click_count"] = config.get("click_count", 1)
+            if relative_to == "window":
+                result["capture_window_bounds"] = [window_left, window_top, window_right, window_bottom]
+            if execute and result["stable"] and ready_to_click and not moved:
+                # OCR can take longer than a frame. Recheck the ROI after recognition.
+                latest = cv2.cvtColor(np.asarray(sct.grab(region)), cv2.COLOR_BGRA2GRAY)
+                if not np.array_equal(gray, latest):
+                    result["stable"] = False
+                    result["reason"] = "frame_changed_before_click"
+                    first_center, streak = None, 0
+                else:
+                    result["click_point"] = execute_click(result, config, sct.monitors)
+                    result["clicked"] = True
+                    result["click_count"] = config.get("click_count", 1)
             ready_to_click = result["stable"]
             if on_frame:
                 result["frame"] = frame + 1
@@ -603,12 +629,14 @@ def main() -> int:
                 save_evidence(screenshot, result, config, args.evidence)
                 result["evidence"] = str(args.evidence)
     except KeyboardInterrupt:
-        return 0
+        return 2 if args.execute else 0
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if not args.watch:
         print(json.dumps(result))
+    if args.execute:
+        return 0 if result.get("clicked", False) else 2
     if args.watch:
         return 0
     return 0 if result["matched"] and result.get("stable", True) else 2

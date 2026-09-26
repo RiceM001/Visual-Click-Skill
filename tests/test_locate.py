@@ -236,7 +236,7 @@ class LocateTests(unittest.TestCase):
     def test_watch_tracks_movement_and_clicks_latest_stable_frame(self):
         template = np.random.default_rng(31).integers(0, 256, (8, 8), dtype=np.uint8)
         frames = []
-        for x in (10, 20, None, 25, 25, 25):
+        for x in (10, 20, None, 25, 25, 25, 25):
             gray = np.zeros((40, 50), dtype=np.uint8)
             if x is not None:
                 gray[10:18, x:x + 8] = template
@@ -244,7 +244,7 @@ class LocateTests(unittest.TestCase):
         config = {"roi": [0, 0, 50, 40], "screen_origin": [100, 200],
                   "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
                   "stable_frames": 2, "frame_interval_ms": 0, "max_center_shift_px": 0,
-                  "watch_frames": len(frames)}
+                  "watch_frames": len(frames) - 1}
 
         class FakeMss:
             monitors = [None, {"left": 0, "top": 0, "width": 1000, "height": 1000}]
@@ -291,6 +291,79 @@ class LocateTests(unittest.TestCase):
                              [None, {"left": -1920, "top": 0, "width": 1920, "height": 1080}]),
                              [-1848, 147])
             click.assert_called_once_with(-1848, 147)
+
+    def test_window_move_after_capture_blocks_click(self):
+        result = {"matched": True, "stable": True, "screen_center": [50, 50],
+                  "capture_window_bounds": [0, 0, 100, 100]}
+        with (mock.patch.object(module, "foreground_window", return_value=("App", (10, 0, 110, 100))),
+              mock.patch.object(module, "send_click") as click):
+            with self.assertRaisesRegex(ValueError, "window moved after capture"):
+                module.execute_click(result, {"expected_window_title": "App", "click_offset": [0, 0]},
+                                     [None, {"left": 0, "top": 0, "width": 500, "height": 500}])
+            click.assert_not_called()
+
+    def test_post_recognition_change_blocks_click_and_single_frame_movement(self):
+        template = np.random.default_rng(73).integers(0, 256, (8, 8), dtype=np.uint8)
+
+        def frame(x):
+            gray = np.zeros((40, 50), dtype=np.uint8)
+            gray[10:18, x:x + 8] = template
+            return module.cv2.cvtColor(gray, module.cv2.COLOR_GRAY2BGRA)
+
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "stable_frames": 1, "frame_interval_ms": 0, "max_center_shift_px": 0}
+        for frames in ([frame(10), frame(10), frame(20)], [frame(10), frame(20)]):
+            with self.subTest(captures=len(frames)):
+                capture = mock.MagicMock()
+                capture.__enter__.return_value = capture
+                capture.grab.side_effect = frames
+                with (mock.patch.object(module.sys, "platform", "win32"),
+                      mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
+                      mock.patch.object(module, "set_dpi_awareness"),
+                      mock.patch.object(module, "execute_click") as click):
+                    result = module.run_live(template, config, execute=True)
+                self.assertFalse(result["clicked"])
+                click.assert_not_called()
+                if len(frames) == 3:
+                    self.assertEqual(result["reason"], "frame_changed_before_click")
+                    self.assertFalse(result["stable"])
+
+    def test_ocr_remembers_enhancement_and_skips_duplicate_pixels(self):
+        crop = np.random.default_rng(23).integers(50, 120, (50, 100), dtype=np.uint8)
+        config = {"roi": [0, 0, 100, 50], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.9,
+                  "ocr_threshold": 0.7, "ocr_occurrence": None,
+                  "ocr_preprocess": "auto", "ocr_scale": 1,
+                  "ocr_adaptive_block_size": 31, "ocr_adaptive_c": 11}
+        empty = SimpleNamespace(txts=(), scores=(), boxes=(), word_results=())
+        found = SimpleNamespace(txts=("SAVE",), scores=(0.95,),
+                                boxes=([[10, 10], [50, 10], [50, 30], [10, 30]],), word_results=())
+        engine = mock.Mock(side_effect=[empty, found])
+        state = {}
+        result = module.locate_text(crop, "SAVE", config, engine, state)
+        self.assertEqual(result["preprocess"], "clahe")
+        self.assertEqual(state["preferred"], "clahe")
+        self.assertEqual(engine.call_count, 2)  # scale=1 makes raw/upscale identical
+        config["ocr_scale"] = 2
+        engine = mock.Mock(side_effect=[empty, found])
+        module.locate_text(crop, "SAVE", config, engine, state)
+        self.assertEqual(engine.call_count, 2)  # raw -> previous winner, skipping upscale
+
+    def test_execute_exit_status_requires_actual_click(self):
+        import json
+
+        config = {"roi": [0, 0, 10, 10]}
+        with (mock.patch.object(sys, "argv", ["locate.py", "--config", "unused.json", "--live",
+                                             "--text", "SAVE", "--execute", "--watch"]),
+              mock.patch.object(Path, "read_text", return_value=json.dumps(config)),
+              mock.patch.object(module, "run_live", return_value={"matched": True, "stable": True,
+                                                                 "clicked": False}) as run):
+            self.assertEqual(module.main(), 2)
+            run.return_value["clicked"] = True
+            self.assertEqual(module.main(), 0)
+            run.side_effect = KeyboardInterrupt
+            self.assertEqual(module.main(), 2)
 
     def test_desktop_double_click_requires_unobscured_target(self):
         result = {"matched": True, "stable": True, "screen_center": [506, 94]}

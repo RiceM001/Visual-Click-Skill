@@ -1,6 +1,1 @@
-numpy>=1.24
-opencv-python>=4.8
-mss>=10.2
-pynput>=1.7
-rapidocr>=3.9.2
-onnxruntime>=1.20
+-r skills/visual-click-skill/requirements.txt

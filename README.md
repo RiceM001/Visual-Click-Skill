@@ -61,6 +61,8 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 - 先缩小 ROI，核对模板或文字、阈值、DPI 与窗口位置。
 - 图片尺寸变化时配置 template_scales；图片和文字预处理默认均为 auto，无需选择方法。识别结果的 preprocess 字段会显示本次采用的方法。
 - 图片识别先尝试灰度；未命中才尝试边缘、去噪、CLAHE 和 Otsu。实时模式优先复用上帧成功的方法；画面及截图位置完全不变时复用识别结果。增强方法可能放大噪声，先用 --evidence 核对结果再点击。
+- OCR 会在原图失败后优先尝试上次成功的方法，并跳过像素及尺寸完全相同的增强结果，减少重复推理。
+- 点击前会再次截图比较 ROI，阻止识别耗时期间画面变化造成的旧位置点击。出现 frame_changed_before_click 时重新定位；ROI 应避开无关动画。--execute 未发送点击时退出码为 2，发送后仍需核验应用结果。
 - 同一 ROI 出现多个相同目标时，先用 --evidence 查看编号，再设置 template_occurrence 或 ocr_occurrence。
 - --evidence 只保存带识别框的 ROI 小图，不保存全屏。
 
@@ -73,6 +75,8 @@ npx skills add RiceM001/Visual-Click-Skill --skill visual-click-skill
 ~~~
 
 技能文件遵循 [Agent Skills 规范](https://agentskills.io/specification)。
+
+技能目录自带 requirements.txt 和 config.example.json，单独安装后也可运行。技能内命令以技能目录为工作目录；预处理保持 auto，由代理根据目标窗口填写 ROI。
 
 ## 🧪 验证
 
