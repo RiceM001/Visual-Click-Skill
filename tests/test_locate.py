@@ -83,9 +83,7 @@ class LocateTests(unittest.TestCase):
         screenshot = np.clip(-80 + 4 * screen_x, 0, 255).astype(np.uint8)
         screenshot[35:59, 42:66][circle] = 200
         config = {"roi": [0, 0, 100, 90], "screen_origin": [0, 0],
-                  "physical_pixels_per_image_pixel": 1, "threshold": 0.8,
-                  "template_preprocess": ["gray", "edges"],
-                  "template_canny_low": 40, "template_canny_high": 100}
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.8}
         result = module.locate(screenshot, template, config)
         self.assertTrue(result["matched"])
         self.assertEqual(result["preprocess"], "edges")
@@ -99,12 +97,16 @@ class LocateTests(unittest.TestCase):
         screenshot[40:68, 50:80] = np.clip(template.astype(float) + rng.normal(0, 55, template.shape),
                                             0, 255).astype(np.uint8)
         config = {"roi": [0, 0, 110, 100], "screen_origin": [0, 0],
-                  "physical_pixels_per_image_pixel": 1, "threshold": 0.6,
-                  "template_preprocess": ["gray", "gaussian"], "template_denoise_kernel": 3}
-        result = module.locate(screenshot, template, config)
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.6}
+        prepared = {}
+        result = module.locate(screenshot, template, config, prepared)
         self.assertTrue(result["matched"])
         self.assertEqual(result["preprocess"], "gaussian")
         self.assertEqual(result["screen_center"], [65.0, 54.0])
+        self.assertEqual(prepared["_preferred"], "gaussian")
+        with mock.patch.object(module.cv2, "Canny") as canny:
+            self.assertTrue(module.locate(screenshot, template, config, prepared)["matched"])
+            canny.assert_not_called()
 
     def test_fast_path_skips_enhancement_and_low_score_peak_scan(self):
         rng = np.random.default_rng(81)
@@ -144,7 +146,10 @@ class LocateTests(unittest.TestCase):
             def grab(self, region):
                 self_region = {"left": -1910, "top": 10, "width": 40, "height": 40}
                 assert region == self_region
-                return bgra
+                self.calls = getattr(self, "calls", 0) + 1
+                frame = bgra.copy()
+                frame[0, 0, :3] = self.calls
+                return frame
 
         with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
               mock.patch.object(module, "set_dpi_awareness"),
@@ -379,7 +384,7 @@ class LocateTests(unittest.TestCase):
         config = {"roi": [0, 0, 100, 50], "screen_origin": [0, 0],
                   "physical_pixels_per_image_pixel": 1, "threshold": 0.9,
                   "ocr_threshold": 0.7, "ocr_occurrence": None,
-                  "ocr_preprocess": ["raw", "upscale"], "ocr_scale": 2,
+                  "ocr_preprocess": "auto", "ocr_scale": 2,
                   "ocr_adaptive_block_size": 31, "ocr_adaptive_c": 11}
         result = module.locate_text(np.zeros((50, 100), dtype=np.uint8), "SAVE", config, engine)
         self.assertTrue(result["matched"])
@@ -463,7 +468,7 @@ class LocateTests(unittest.TestCase):
         self.assertTrue(result["stable"])
         self.assertFalse(result["clicked"])
         self.assertEqual(result["screen_center"], [-1870.0, 150.0])
-        self.assertEqual(engine.call_count, 2)
+        self.assertEqual(engine.call_count, 1)
         click.assert_not_called()
 
     def test_inspect_reports_monitor_and_active_window(self):

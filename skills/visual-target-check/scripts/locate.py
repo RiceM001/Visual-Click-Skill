@@ -41,15 +41,16 @@ def template_variant(image: np.ndarray, method: str, config: dict) -> np.ndarray
     if method == "gray":
         return image
     if method == "clahe":
-        return cv2.createCLAHE(clipLimit=config["template_clahe_clip_limit"],
-                               tileGridSize=(config["template_clahe_grid_size"],) * 2).apply(image)
+        return cv2.createCLAHE(clipLimit=config.get("template_clahe_clip_limit", 3.0),
+                               tileGridSize=(config.get("template_clahe_grid_size", 8),) * 2).apply(image)
     if method == "otsu":
         return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     if method == "gaussian":
-        return cv2.GaussianBlur(image, (config["template_denoise_kernel"],) * 2, 0)
+        return cv2.GaussianBlur(image, (config.get("template_denoise_kernel", 3),) * 2, 0)
     if method == "median":
-        return cv2.medianBlur(image, config["template_denoise_kernel"])
-    return cv2.Canny(image, config["template_canny_low"], config["template_canny_high"])
+        return cv2.medianBlur(image, config.get("template_denoise_kernel", 3))
+    return cv2.Canny(image, config.get("template_canny_low", 40),
+                     config.get("template_canny_high", 100))
 
 
 def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, method: str,
@@ -151,25 +152,30 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
 
 def locate(screenshot: np.ndarray, template: np.ndarray, config: dict,
            prepared: dict | None = None) -> dict:
-    methods = config.get("template_preprocess", ["gray"])
+    setting = config.get("template_preprocess", "auto")
+    automatic = isinstance(setting, str) and setting == "auto"
+    methods = (["gray", "edges", "gaussian", "median", "clahe", "otsu"]
+               if automatic else setting)
+    denoise = config.get("template_denoise_kernel", 3)
+    clip = config.get("template_clahe_clip_limit", 3.0)
+    grid = config.get("template_clahe_grid_size", 8)
+    canny_low = config.get("template_canny_low", 40)
+    canny_high = config.get("template_canny_high", 100)
     if (not isinstance(methods, list) or not methods
             or any(type(method) is not str or method not in ("gray", "clahe", "otsu", "edges",
                                                           "gaussian", "median")
                    for method in methods)
             or len(methods) != len(set(methods))
             or any(method in methods for method in ("gaussian", "median"))
-            and (type(config.get("template_denoise_kernel")) is not int
-                 or config["template_denoise_kernel"] < 3
-                 or config["template_denoise_kernel"] % 2 != 1)
-            or "clahe" in methods and (type(config.get("template_clahe_clip_limit")) not in (int, float)
-                                       or not math.isfinite(config["template_clahe_clip_limit"])
-                                       or config["template_clahe_clip_limit"] <= 0
-                                       or type(config.get("template_clahe_grid_size")) is not int
-                                       or config["template_clahe_grid_size"] < 1)
-            or "edges" in methods and (type(config.get("template_canny_low")) is not int
-                                       or type(config.get("template_canny_high")) is not int
-                                       or not 0 <= config["template_canny_low"] < config["template_canny_high"] <= 255)):
+            and (type(denoise) is not int or denoise < 3 or denoise % 2 != 1)
+            or "clahe" in methods and (type(clip) not in (int, float) or not math.isfinite(clip)
+                                       or clip <= 0 or type(grid) is not int or grid < 1)
+            or "edges" in methods and (type(canny_low) is not int or type(canny_high) is not int
+                                       or not 0 <= canny_low < canny_high <= 255)):
         raise ValueError("invalid template preprocessing configuration")
+    if automatic and prepared is not None and prepared.get("_preferred") in methods[1:]:
+        preferred = prepared["_preferred"]
+        methods = ["gray", preferred] + [method for method in methods[1:] if method != preferred]
     fallback = None
     for method in methods:
         try:
@@ -179,6 +185,8 @@ def locate(screenshot: np.ndarray, template: np.ndarray, config: dict,
                 raise
             continue
         if result["matched"] or result["ambiguous"]:
+            if automatic and result["matched"] and prepared is not None:
+                prepared["_preferred"] = method
             return result
         if fallback is None or result["confidence"] > fallback["confidence"]:
             fallback = result
@@ -197,13 +205,15 @@ def ocr_engine():
 
 
 def ocr_variants(crop: np.ndarray, config: dict):
-    methods = config["ocr_preprocess"]
+    setting = config.get("ocr_preprocess", "auto")
+    methods = (["raw", "upscale", "clahe", "otsu", "adaptive", "invert"]
+               if setting == "auto" else setting)
     factor = config["ocr_scale"]
     block = config["ocr_adaptive_block_size"]
     adaptive_c = config["ocr_adaptive_c"]
     allowed = {"raw", "upscale", "clahe", "otsu", "adaptive", "invert"}
-    clip = config.get("ocr_clahe_clip_limit") if isinstance(methods, list) and "clahe" in methods else None
-    grid = config.get("ocr_clahe_grid_size") if isinstance(methods, list) and "clahe" in methods else None
+    clip = config.get("ocr_clahe_clip_limit", 3.0) if isinstance(methods, list) and "clahe" in methods else None
+    grid = config.get("ocr_clahe_grid_size", 8) if isinstance(methods, list) and "clahe" in methods else None
     if (not isinstance(methods, list) or not methods or any(m not in allowed for m in methods)
             or type(factor) is not int or factor < 1
             or type(block) is not int or block < 3 or block % 2 != 1
@@ -484,6 +494,9 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     left, top, width, height = config["roi"]
     engine = ocr_engine() if isinstance(target, str) else None
     prepared = None if isinstance(target, str) else {}
+    previous_region = None
+    previous_gray = None
+    previous_result = None
     first_center = None
     streak = 0
     ready_to_click = False
@@ -511,8 +524,12 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             except Exception as exc:
                 raise RuntimeError(f"capture failed: {exc}") from exc
             gray = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
-            result = (locate_text(gray, target, local_config, engine)
-                       if isinstance(target, str) else locate(gray, target, local_config, prepared))
+            if region == previous_region and np.array_equal(gray, previous_gray):
+                result = previous_result.copy()
+            else:
+                result = (locate_text(gray, target, local_config, engine)
+                          if isinstance(target, str) else locate(gray, target, local_config, prepared))
+                previous_region, previous_gray, previous_result = region, gray, result.copy()
             moved = False
             if result["matched"]:
                 center = result["screen_center"]

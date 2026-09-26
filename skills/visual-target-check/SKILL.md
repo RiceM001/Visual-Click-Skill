@@ -34,5 +34,5 @@ python skills/visual-target-check/scripts/locate.py --config config.example.json
 ## 坐标与排障
 
 - 实时截图使用物理像素，physical_pixels_per_image_pixel 必须为 1.0。窗口模式的 roi 相对窗口左上角；屏幕模式使用 screen_origin + roi。副屏原点可能为负。
-- 图片匹配先用灰度，未命中时按 template_preprocess 尝试高斯/中值去噪、CLAHE、Otsu 和边缘；按噪声或光照问题只启用必要方法，实时模式会缓存模板变体。OCR 先处理原始 ROI，再按 ocr_preprocess 尝试增强；模糊文字先缩小 ROI。模板大小变化时调整 template_scales。
+- 图片与 OCR 预处理默认使用 auto，不要求用户选择方法。图片先用灰度，未命中才尝试边缘、去噪、CLAHE 和 Otsu；实时模式优先复用上帧成功的方法，画面及位置不变时复用识别结果。OCR 先处理原始 ROI，再自动尝试增强。用结果中的 preprocess 和 --evidence 核验，模板大小变化时调整 template_scales。
 - 置信度不足或目标重复时不点击。点击偏移先核对 ROI、窗口边框、DPI 和坐标映射；桌面被弹窗遮挡时不绕过桌面命中校验。
