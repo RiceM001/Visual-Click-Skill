@@ -3,6 +3,10 @@
   "screen_origin": [0, 0],
   "physical_pixels_per_image_pixel": 1.0,
   "threshold": 0.9,
+  "template_scales": [1.0],
+  "template_occurrence": null,
+  "template_nms_iou": 0.3,
+  "template_max_candidates": 100,
   "stable_frames": 2,
   "frame_interval_ms": 120,
   "max_center_shift_px": 3,
@@ -10,8 +14,10 @@
   "expected_window_title": "TODO: target window title",
   "ocr_threshold": 0.75,
   "ocr_occurrence": null,
-  "ocr_preprocess": ["raw", "upscale", "otsu", "adaptive", "invert"],
+  "ocr_preprocess": ["raw", "upscale", "clahe", "otsu", "adaptive", "invert"],
   "ocr_scale": 2,
+  "ocr_clahe_clip_limit": 3.0,
+  "ocr_clahe_grid_size": 8,
   "ocr_adaptive_block_size": 31,
   "ocr_adaptive_c": 11
 }

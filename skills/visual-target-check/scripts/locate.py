@@ -30,30 +30,96 @@ def validate_config(config: dict, image_shape=None) -> None:
         raise ValueError("roi extends outside screenshot")
 
 
+def box_iou(a: list[float], b: list[float]) -> float:
+    overlap_width = max(0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    overlap_height = max(0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    intersection = overlap_width * overlap_height
+    return intersection / (a[2] * a[3] + b[2] * b[3] - intersection)
+
+
 def locate(screenshot: np.ndarray, template: np.ndarray, config: dict) -> dict:
     validate_config(config, screenshot.shape)
     left, top, width, height = config["roi"]
     origin = config["screen_origin"]
     scale = config["physical_pixels_per_image_pixel"]
     threshold = config["threshold"]
-    if template.shape[0] > height or template.shape[1] > width:
-        raise ValueError("template is larger than roi")
+    scales = config.get("template_scales", [1.0])
+    occurrence = config.get("template_occurrence")
+    nms_iou = config.get("template_nms_iou", 0.3)
+    max_candidates = config.get("template_max_candidates", 100)
+    if (not isinstance(scales, list) or not scales
+            or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                   for value in scales)
+            or occurrence is not None and (type(occurrence) is not int or occurrence < 1)
+            or type(nms_iou) not in (int, float) or not math.isfinite(nms_iou)
+            or not 0 < nms_iou < 1
+            or type(max_candidates) is not int or max_candidates < 1):
+        raise ValueError("invalid template scales, occurrence, NMS IoU, or candidate limit")
     if np.std(template) == 0:
         raise ValueError("constant template cannot be matched reliably")
 
     crop = screenshot[top:top + height, left:left + width]
-    score_map = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
-    _, confidence, _, point = cv2.minMaxLoc(score_map)
-    image_center = [left + point[0] + template.shape[1] / 2,
-                    top + point[1] + template.shape[0] / 2]
-    screen_center = [origin[i] + image_center[i] * scale for i in range(2)]
-    return {"matched": confidence >= threshold, "confidence": round(confidence, 6),
-            "image_center": image_center, "screen_center": screen_center,
-            "image_bbox": [left + point[0], top + point[1], template.shape[1], template.shape[0]],
-            "screen_bbox": [origin[0] + (left + point[0]) * scale,
-                            origin[1] + (top + point[1]) * scale,
-                            template.shape[1] * scale, template.shape[0] * scale],
-            "roi": config["roi"]}
+    best = None
+    candidates = []
+    for factor in scales:
+        scaled_width = round(template.shape[1] * factor)
+        scaled_height = round(template.shape[0] * factor)
+        if min(scaled_width, scaled_height) < 2 or scaled_width > width or scaled_height > height:
+            continue
+        scaled = (template if scaled_width == template.shape[1] and scaled_height == template.shape[0]
+                  else cv2.resize(template, (scaled_width, scaled_height), interpolation=(
+                      cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC)))
+        if np.std(scaled) == 0:
+            continue
+        scores = cv2.matchTemplate(crop, scaled, cv2.TM_CCOEFF_NORMED)
+
+        def candidate(point, confidence):
+            image_center = [left + point[0] + scaled_width / 2,
+                            top + point[1] + scaled_height / 2]
+            image_bbox = [left + point[0], top + point[1], scaled_width, scaled_height]
+            return {"confidence": round(float(confidence), 6), "image_center": image_center,
+                    "screen_center": [origin[i] + image_center[i] * scale for i in range(2)],
+                    "image_bbox": image_bbox,
+                    "screen_bbox": [origin[0] + image_bbox[0] * scale,
+                                    origin[1] + image_bbox[1] * scale,
+                                    scaled_width * scale, scaled_height * scale],
+                    "template_scale": factor}
+
+        _, confidence, _, point = cv2.minMaxLoc(scores)
+        if best is None or confidence > best["confidence"]:
+            best = candidate(point, confidence)
+        peaks = (scores >= threshold) & (scores == cv2.dilate(scores, np.ones((3, 3), np.uint8)))
+        ys, xs = np.where(peaks)
+        candidates.extend(candidate((int(x), int(y)), scores[y, x]) for y, x in zip(ys, xs))
+    if best is None:
+        raise ValueError("all template scales are larger than roi or constant")
+    matches = []
+    truncated = False
+    for item in sorted(candidates, key=lambda value: value["confidence"], reverse=True):
+        if all(box_iou(item["image_bbox"], kept["image_bbox"]) < nms_iou for kept in matches):
+            matches.append(item)
+            if len(matches) > max_candidates:
+                matches.pop()
+                truncated = True
+                break
+    matches.sort(key=lambda value: (value["image_center"][1], value["image_center"][0]))
+    selected = None
+    if not truncated:
+        if occurrence is not None and occurrence <= len(matches):
+            selected = matches[occurrence - 1]
+        elif occurrence is None and len(matches) == 1:
+            selected = matches[0]
+    if selected is None:
+        return {**best, "matched": False, "ambiguous": truncated or len(matches) > 1 and occurrence is None,
+                "candidate_limit_reached": truncated,
+                "image_center": None if matches else best["image_center"],
+                "screen_center": None if matches else best["screen_center"],
+                "image_bbox": None if matches else best["image_bbox"],
+                "screen_bbox": None if matches else best["screen_bbox"],
+                "roi": config["roi"], "matches": matches}
+    return {**selected, "matched": True, "ambiguous": False, "candidate_limit_reached": False,
+            "roi": config["roi"],
+            "matches": matches}
 
 
 def ocr_engine():
@@ -70,11 +136,15 @@ def ocr_variants(crop: np.ndarray, config: dict):
     factor = config["ocr_scale"]
     block = config["ocr_adaptive_block_size"]
     adaptive_c = config["ocr_adaptive_c"]
-    allowed = {"raw", "upscale", "otsu", "adaptive", "invert"}
+    allowed = {"raw", "upscale", "clahe", "otsu", "adaptive", "invert"}
+    clip = config.get("ocr_clahe_clip_limit") if isinstance(methods, list) and "clahe" in methods else None
+    grid = config.get("ocr_clahe_grid_size") if isinstance(methods, list) and "clahe" in methods else None
     if (not isinstance(methods, list) or not methods or any(m not in allowed for m in methods)
             or type(factor) is not int or factor < 1
             or type(block) is not int or block < 3 or block % 2 != 1
-            or type(adaptive_c) not in (int, float) or not math.isfinite(adaptive_c)):
+            or type(adaptive_c) not in (int, float) or not math.isfinite(adaptive_c)
+            or "clahe" in methods and (type(clip) not in (int, float) or not math.isfinite(clip)
+                                       or clip <= 0 or type(grid) is not int or grid < 1)):
         raise ValueError("invalid OCR preprocessing configuration")
     enlarged = None
     for method in methods:
@@ -85,6 +155,8 @@ def ocr_variants(crop: np.ndarray, config: dict):
                 enlarged = cv2.resize(crop, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
             if method == "upscale":
                 yield method, enlarged, factor
+            elif method == "clahe":
+                yield method, cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid)).apply(enlarged), factor
             elif method == "otsu":
                 yield method, cv2.threshold(enlarged, 0, 255,
                                             cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], factor

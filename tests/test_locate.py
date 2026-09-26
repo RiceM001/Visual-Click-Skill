@@ -35,6 +35,45 @@ class LocateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside screenshot"):
             module.locate(screenshot, template, config)
 
+    def test_multiscale_template_maps_resized_target(self):
+        rng = np.random.default_rng(21)
+        template = rng.integers(0, 256, (16, 20), dtype=np.uint8)
+        screenshot = rng.integers(0, 256, (120, 140), dtype=np.uint8)
+        screenshot[50:74, 45:75] = module.cv2.resize(template, (30, 24),
+                                                       interpolation=module.cv2.INTER_CUBIC)
+        config = {"roi": [5, 10, 100, 80], "screen_origin": [-1920, 100],
+                  "physical_pixels_per_image_pixel": 1.25, "threshold": 0.995,
+                  "template_scales": [1.0, 1.5]}
+        result = module.locate(screenshot, template, config)
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["template_scale"], 1.5)
+        self.assertEqual(result["image_bbox"], [45, 50, 30, 24])
+        self.assertEqual(result["screen_center"], [-1845.0, 177.5])
+
+    def test_duplicate_templates_block_click_until_occurrence_selected(self):
+        rng = np.random.default_rng(22)
+        template = rng.integers(0, 256, (10, 12), dtype=np.uint8)
+        screenshot = rng.integers(0, 256, (100, 120), dtype=np.uint8)
+        screenshot[20:30, 20:32] = template
+        screenshot[60:70, 70:82] = template
+        config = {"roi": [0, 0, 120, 100], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.999,
+                  "template_scales": [1.0]}
+        ambiguous = module.locate(screenshot, template, config)
+        self.assertFalse(ambiguous["matched"])
+        self.assertTrue(ambiguous["ambiguous"])
+        self.assertEqual(len(ambiguous["matches"]), 2)
+        with self.assertRaisesRegex(ValueError, "not matched"):
+            module.execute_click({**ambiguous, "stable": True},
+                                 {"expected_window_title": "App", "click_offset": [0, 0]}, [])
+        config["template_occurrence"] = 2
+        selected = module.locate(screenshot, template, config)
+        self.assertTrue(selected["matched"])
+        self.assertEqual(selected["image_center"], [76.0, 65.0])
+        config["template_max_candidates"] = 1
+        self.assertTrue(module.locate(screenshot, template, config)["candidate_limit_reached"])
+        self.assertFalse(module.locate(screenshot, template, config)["matched"])
+
     def test_live_dry_run_uses_roi_and_never_clicks(self):
         rng = np.random.default_rng(8)
         gray = rng.integers(0, 256, (40, 40), dtype=np.uint8)
@@ -194,6 +233,15 @@ class LocateTests(unittest.TestCase):
         self.assertTrue(result["matched"])
         self.assertEqual(result["preprocess"], "upscale")
         self.assertEqual(engine.call_count, 2)
+
+    def test_clahe_preprocessing_expands_low_contrast_roi(self):
+        crop = np.tile(np.arange(100, 120, dtype=np.uint8), (40, 1))
+        config = {"ocr_preprocess": ["clahe"], "ocr_scale": 2,
+                  "ocr_adaptive_block_size": 31, "ocr_adaptive_c": 11,
+                  "ocr_clahe_clip_limit": 3.0, "ocr_clahe_grid_size": 4}
+        method, enhanced, factor = next(module.ocr_variants(crop, config))
+        self.assertEqual((method, factor, enhanced.shape), ("clahe", 2, (80, 40)))
+        self.assertGreater(np.ptp(enhanced), np.ptp(crop))
 
     def test_ocr_occurrence_retries_when_first_pass_finds_too_few(self):
         def box(x, y):

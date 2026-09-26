@@ -27,11 +27,17 @@ python -m unittest discover -s tests -v
 
 `--inspect` prints monitor geometry and the foreground window's title/bounds to help configure the tool. `--evidence` saves only the annotated ROI, never the full screen.
 
+## 图片定位 / Image targeting
+
+`template_scales` 支持多个缩放比例，例如 `[0.75, 1.0, 1.25]`，适合 DPI 或界面缩放变化。每个比例的候选框经过 `template_nms_iou` 去重；同一 ROI 内有多个目标时默认阻止点击，先用 `--evidence` 查看编号，再设置从上到下、从左到右的 `template_occurrence`（1 起）。`template_max_candidates` 限制候选数量；超过上限时拒绝点击。比例越多，匹配耗时越长。
+
+`template_scales` accepts multiple sizes, such as `[0.75, 1.0, 1.25]`, for DPI or UI scaling changes. `template_nms_iou` removes overlapping candidates across scales. Multiple targets block clicks by default; inspect their numbers with `--evidence`, then set the 1-based `template_occurrence` from top to bottom and left to right. `template_max_candidates` bounds the search; exceeding it blocks clicks. More scales take longer to match.
+
 ## 文字定位 / OCR text targeting
 
-`--text` 精确匹配指定文字。OCR 先尝试原始 ROI，再按 `ocr_preprocess` 顺序尝试放大、Otsu 二值化、自适应二值化和反色；找到达到 `ocr_threshold` 且满足 `ocr_occurrence` 的结果才停止。启用单字框以定位词内子串；只有整行完全匹配时才回退到行框。
+`--text` 精确匹配指定文字。OCR 先尝试原始 ROI，再按 `ocr_preprocess` 顺序尝试放大、CLAHE 局部对比度增强、Otsu 二值化、自适应二值化和反色；找到达到 `ocr_threshold` 且满足 `ocr_occurrence` 的结果才停止。启用单字框以定位词内子串；只有整行完全匹配时才回退到行框。CLAHE 强度与网格由 `ocr_clahe_clip_limit`、`ocr_clahe_grid_size` 控制。
 
-`--text` matches exact text. OCR tries the raw ROI first, then the configured sequence of upscaling, Otsu, adaptive thresholding, and inversion. It stops when matches pass `ocr_threshold` and satisfy `ocr_occurrence`. Single-character boxes locate substrings inside words; a full-line box is used only for an exact full-line match.
+`--text` matches exact text. OCR tries the raw ROI first, then the configured sequence of upscaling, CLAHE local contrast enhancement, Otsu, adaptive thresholding, and inversion. It stops when matches pass `ocr_threshold` and satisfy `ocr_occurrence`. Single-character boxes locate substrings inside words; a full-line box is used only for an exact full-line match. `ocr_clahe_clip_limit` and `ocr_clahe_grid_size` tune CLAHE.
 
 ```bash
 python skills/visual-target-check/scripts/locate.py --config config.example.json --screenshot path/to/screenshot.png --text "设置"
