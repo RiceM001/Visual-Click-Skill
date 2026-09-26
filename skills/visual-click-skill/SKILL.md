@@ -40,6 +40,8 @@ python scripts/locate.py --config config.example.json --live --text "1.6.3" --ex
 - timeout_seconds 或 --timeout 为正数时，普通实时模式也会自动重试；超时返回 timed_out=true、reason=timeout、退出码 2。0 保持原有帧数限制。计时不含 OCR 模型加载，无法中断正在运行的识别；超时后不开始点击。观察模式还受 watch_frames 限制。
 - 用 frames、elapsed_ms、cache_hits 判断定位耗时与缓存是否有效。中文文件名可直接用于模板、截图与证据图；空格路径加引号。
 - 置信度不足或目标重复时不点击。点击偏移先核对 ROI、窗口边框、DPI 和坐标映射；桌面被弹窗遮挡时不绕过桌面命中校验。
+- 稳定性比较目标框两角与本轮首帧的距离，沿用 max_center_shift_px 作为像素容差，避免中心不变的缩放被误判为稳定。有限帧观察结束时，最后一帧未匹配或未稳定返回退出码 2。
+- template_max_candidates 限制去重前的原始峰值总数；candidate_limit_reached=true 时不能依赖不完整列表选择 occurrence，应先缩小 ROI 或提高 threshold。
 
 ## 代码复用
 

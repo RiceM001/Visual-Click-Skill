@@ -5,6 +5,7 @@
 ## 🌟 核心能力
 
 - **实时跟踪**：逐帧更新目标框。目标移动时重新定位，丢失时重置稳定计数。
+- **缩放稳定校验**：同时比较目标框左上角和右下角，中心不变但尺寸变化时也会重新累计稳定帧。
 - **图片与文字识别**：多尺度模板匹配自动选择灰度、去噪、局部对比度增强、二值化或边缘处理；OCR 自动尝试放大、增强、二值化、反色和单字框定位。
 - **准确映射**：处理 ROI 偏移、DPI 缩放和多显示器负坐标；窗口 ROI 可随前台窗口移动。
 - **安全点击**：重复目标默认不点击；连续稳定后再取一帧复核最新位置；窗口模式校验前台标题，桌面模式校验图标未被遮挡；支持可配置双击。
@@ -39,6 +40,8 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 ~~~
 
 --timeout 对应 timeout_seconds，0 保持原有帧数限制；与 --watch 同用时限制观察总时长，watch_frames 仍可提前结束观察。计时不含 OCR 模型加载，单次识别不能强行中断，但识别或复核结束时若已超时不会点击。超时返回 timed_out=true、reason=timeout 和退出码 2。
+
+有限帧 --watch 结束后，最后结果未匹配或未稳定也返回退出码 2；正常完成且最后结果稳定才返回 0。
 
 实时结果包含 frames、elapsed_ms、cache_hits，分别表示已处理帧数、定位循环耗时和省去的重复识别次数。--watch 在等待间隔内超时，会追加一条最后帧的超时状态。
 
@@ -78,6 +81,8 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 - OCR 会在原图失败后优先尝试上次成功的方法，并跳过像素及尺寸完全相同的增强结果，减少重复推理。
 - 点击前会再次截图比较 ROI，阻止识别耗时期间画面变化造成的旧位置点击。出现 frame_changed_before_click 时重新定位；ROI 应避开无关动画。--execute 未发送点击时退出码为 2，发送后仍需核验应用结果。
 - 同一 ROI 出现多个相同目标时，先用 --evidence 查看编号，再设置 template_occurrence 或 ocr_occurrence。
+- template_max_candidates 在跨尺度候选去重前限制原始峰值总数，超限直接拒绝匹配，避免低阈值或重复纹理产生大量候选。此时证据图不是完整候选列表；应缩小 ROI 或提高 threshold，必要时再调整数量上限。
+- max_center_shift_px 现用于限制目标框两角相对本轮首帧的位移，同时覆盖平移、缩放和缓慢漂移。
 - --evidence 只保存带识别框的 ROI 小图，不保存全屏。
 
 ## 📦 安装技能

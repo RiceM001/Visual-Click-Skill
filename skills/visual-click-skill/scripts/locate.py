@@ -96,6 +96,7 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
     crop = template_variant(screenshot[top:top + height, left:left + width], method, config)
     best = None
     candidates = []
+    truncated = False
     for factor in scales:
         scaled_width = round(template.shape[1] * factor)
         scaled_height = round(template.shape[0] * factor)
@@ -127,20 +128,19 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
         if confidence < threshold:
             continue
         peaks = (scores >= threshold) & (scores == cv2.dilate(scores, np.ones((3, 3), np.uint8)))
+        # 先检查原始峰值数量，避免低阈值时创建成千上万个候选字典。
+        if np.count_nonzero(peaks) > max_candidates - len(candidates):
+            truncated = True
+            break
         ys, xs = np.where(peaks)
         candidates.extend(candidate((int(x), int(y)), scores[y, x]) for y, x in zip(ys, xs))
     if best is None:
         raise ValueError("all template scales are larger than roi or constant")
     matches = []
-    truncated = False
     # 多尺度可能重复命中同一目标，先按重叠面积去重，再判断是否存在多个目标。
     for item in sorted(candidates, key=lambda value: value["confidence"], reverse=True):
         if all(box_iou(item["image_bbox"], kept["image_bbox"]) < nms_iou for kept in matches):
             matches.append(item)
-            if len(matches) > max_candidates:
-                matches.pop()
-                truncated = True
-                break
     selected = select_match(matches, occurrence)
     if truncated:  # 候选被截断时，不能确认编号或唯一性。
         selected = None
@@ -530,7 +530,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     previous_region = None
     previous_gray = None
     previous_result = None
-    first_center = None
+    first_corners = None
     streak = 0
     ready_to_click = False
     # 模型加载后开始计时；单次 OCR 不强行中断，但超时后绝不发送点击。
@@ -571,15 +571,17 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                 previous_region, previous_gray, previous_result = region, gray, result.copy()
             moved = False
             if result["matched"]:
-                center = result["screen_center"]
-                # 相对本轮首帧判断稳定性，避免缓慢漂移被相邻帧比较漏掉。
-                moved = first_center is not None and math.dist(center, first_center) > shift
+                x, y, box_width, box_height = result["screen_bbox"]
+                corners = ((x, y), (x + box_width, y + box_height))
+                # 对比本轮首帧的两个角，既检测缓慢漂移，也检测中心不变的缩放。
+                moved = first_corners is not None and any(
+                    math.dist(current, first) > shift for current, first in zip(corners, first_corners))
                 if moved:
                     streak = 0
-                first_center = center if first_center is None or moved else first_center
+                first_corners = corners if first_corners is None or moved else first_corners
                 streak += 1
             else:
-                first_center = None
+                first_corners = None
                 streak = 0
             result["stable"] = streak >= count
             result["clicked"] = False
@@ -595,7 +597,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                 elif not np.array_equal(gray, latest):
                     result["stable"] = False
                     result["reason"] = "frame_changed_before_click"
-                    first_center, streak = None, 0
+                    first_corners, streak = None, 0
                 else:
                     result["click_point"] = execute_click(result, config, sct.monitors)
                     result["clicked"] = True
@@ -677,8 +679,6 @@ def main() -> int:
         print(json.dumps(result))
     if args.execute:
         return 0 if result.get("clicked", False) else 2
-    if args.watch:
-        return 2 if result.get("timed_out", False) else 0
     return 0 if result["matched"] and result.get("stable", True) else 2
 
 

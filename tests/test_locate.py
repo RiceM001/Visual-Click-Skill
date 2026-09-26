@@ -622,7 +622,7 @@ class LocateTests(unittest.TestCase):
             calls.append(1)
             if len(calls) == 2:
                 clock[0] = 2.0
-            return {"matched": True, "screen_center": [20, 20]}
+            return {"matched": True, "screen_center": [20, 20], "screen_bbox": [15, 15, 10, 10]}
 
         with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
               mock.patch.object(module.sys, "platform", "win32"),
@@ -682,6 +682,42 @@ class LocateTests(unittest.TestCase):
             self.assertEqual(result["clicked"], not expire)
             self.assertEqual(click.call_count, 0 if expire else 1)
             self.assertEqual(result["frames"], 3)
+
+    def test_candidate_limit_bounds_peak_materialization(self):
+        template = np.random.default_rng(93).integers(0, 256, (8, 8), dtype=np.uint8)
+        config = {"roi": [0, 0, 48, 48], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0,
+                  "template_preprocess": ["gray"], "template_max_candidates": 5}
+        with mock.patch.object(module, "location_result", wraps=module.location_result) as build:
+            result = module.locate(np.zeros((48, 48), dtype=np.uint8), template, config)
+        self.assertFalse(result["matched"])
+        self.assertTrue(result["candidate_limit_reached"])
+        self.assertLessEqual(build.call_count, 6)  # 最佳诊断框加最多 5 个候选。
+
+    def test_resizing_target_at_same_center_is_not_stable(self):
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.9,
+                  "stable_frames": 2, "frame_interval_ms": 0, "max_center_shift_px": 3}
+        capture = mock.MagicMock()
+        capture.__enter__.return_value = capture
+        capture.grab.side_effect = [np.zeros((40, 50, 4), dtype=np.uint8),
+                                    np.ones((40, 50, 4), dtype=np.uint8)]
+        targets = [{"matched": True, "screen_center": [25, 20], "screen_bbox": box}
+                   for box in ([20, 15, 10, 10], [10, 5, 30, 30])]
+        with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=lambda: capture)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "locate", side_effect=targets),
+              mock.patch.object(module, "send_click") as click):
+            result = module.run_live(np.ones((8, 8), dtype=np.uint8), config, execute=False)
+        self.assertFalse(result["stable"])
+        click.assert_not_called()
+
+    def test_watch_without_stable_match_exits_unsuccessfully(self):
+        with (mock.patch.object(sys, "argv", ["locate.py", "--config", "unused.json", "--live",
+                                             "--text", "SAVE", "--watch"]),
+              mock.patch.object(Path, "read_text", return_value="{}"),
+              mock.patch.object(module, "run_live", return_value={"matched": False, "stable": False})):
+            self.assertEqual(module.main(), 2)
 
 
 if __name__ == "__main__":
