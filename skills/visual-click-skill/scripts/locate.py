@@ -641,32 +641,53 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="在实时模式下执行点击")
     parser.add_argument("--watch", action="store_true", help="逐帧输出最新位置")
     parser.add_argument("--timeout", type=float, help="实时等待秒数；0 使用原有帧数限制")
+    parser.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
+                        help="覆盖搜索区域；实时默认相对当前窗口，截图默认相对图片")
     args = parser.parse_args()
     try:
         if args.inspect:
-            if args.execute or args.evidence or args.watch or args.timeout is not None:
-                raise ValueError("--inspect cannot be combined with --execute, --evidence, --watch, or --timeout")
+            if args.execute or args.evidence or args.watch or args.timeout is not None or args.roi:
+                raise ValueError("--inspect cannot be combined with --execute, --evidence, --watch, --timeout, or --roi")
             print(json.dumps(inspect_desktop()))
             return 0
-        if args.config is None or (args.template is None and args.text is None):
-            raise ValueError("--config and either --template or --text are required")
+        if args.template is None and args.text is None:
+            raise ValueError("either --template or --text is required")
         if args.execute and not args.live:
             raise ValueError("--execute requires --live")
         if args.watch and not args.live:
             raise ValueError("--watch requires --live")
         if args.timeout is not None and not args.live:
             raise ValueError("--timeout requires --live")
-        config = json.loads(args.config.read_text(encoding="utf-8"))
+        config_path = args.config or Path(__file__).resolve().parents[1] / "config.example.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         if args.timeout is not None:
             config["timeout_seconds"] = args.timeout
         target = args.text if args.text is not None else read_gray(args.template)
+        screenshot = None
+        if not args.live:
+            screenshot = read_gray(args.screenshot)
+        if args.config is None:
+            if args.live:
+                set_dpi_awareness()
+                title, (left, top, right, bottom) = foreground_window()
+                if not title.strip():
+                    raise ValueError("active window has no title; use --config for screen capture")
+                config.update(roi=[0, 0, right - left, bottom - top], roi_relative_to="window",
+                              target_surface="window", expected_window_title=title,
+                              screen_origin=[0, 0], physical_pixels_per_image_pixel=1.0)
+            else:
+                config.update(roi=[0, 0, screenshot.shape[1], screenshot.shape[0]],
+                              screen_origin=[0, 0], physical_pixels_per_image_pixel=1.0)
+        if args.roi is not None:
+            config["roi"] = args.roi
         if args.live:
             emit = (lambda item: print(json.dumps(item), flush=True)) if args.watch else None
             result = run_live(target, config, args.execute, args.evidence, emit)
         else:
-            screenshot = read_gray(args.screenshot)
             result = (locate_text(screenshot, target, config)
                       if isinstance(target, str) else locate(screenshot, target, config))
+            if args.config is None:
+                result["coordinate_space"] = "image"
             if args.evidence is not None:
                 save_evidence(screenshot, result, config, args.evidence)
                 result["evidence"] = str(args.evidence)

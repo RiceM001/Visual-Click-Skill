@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -718,6 +719,36 @@ class LocateTests(unittest.TestCase):
               mock.patch.object(Path, "read_text", return_value="{}"),
               mock.patch.object(module, "run_live", return_value={"matched": False, "stable": False})):
             self.assertEqual(module.main(), 2)
+
+    def test_screenshot_without_config_uses_entire_image(self):
+        image = np.random.default_rng(94).integers(0, 256, (80, 100), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            screenshot, template = Path(directory) / "screen.png", Path(directory) / "target.png"
+            module.cv2.imencode(".png", image)[1].tofile(screenshot)
+            module.cv2.imencode(".png", image[25:37, 40:52])[1].tofile(template)
+            with (mock.patch.object(sys, "argv", ["locate.py", "--screenshot", str(screenshot),
+                                                 "--template", str(template)]),
+                  mock.patch("builtins.print") as output):
+                self.assertEqual(module.main(), 0)
+            result = json.loads(output.call_args.args[0])
+        self.assertEqual(result["roi"], [0, 0, 100, 80])
+        self.assertEqual(result["image_bbox"], [40, 25, 12, 12])
+        self.assertEqual(result["coordinate_space"], "image")
+
+    def test_live_without_config_follows_any_foreground_window(self):
+        with (mock.patch.object(sys, "argv", ["locate.py", "--live", "--text", "设置",
+                                             "--roi", "20", "30", "80", "40"]),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", return_value=("通用应用", (100, 200, 500, 400))),
+              mock.patch.object(module, "run_live", return_value={"matched": True, "stable": True}) as run,
+              mock.patch("builtins.print")):
+            self.assertEqual(module.main(), 0)
+        config = run.call_args.args[1]
+        self.assertEqual(config["roi"], [20, 30, 80, 40])
+        self.assertEqual(config["roi_relative_to"], "window")
+        self.assertEqual(config["expected_window_title"], "通用应用")
+        self.assertEqual(config["screen_origin"], [0, 0])
+        self.assertFalse(run.call_args.args[2])
 
 
 if __name__ == "__main__":

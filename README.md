@@ -1,6 +1,6 @@
 # 🎯 Visual-Click-Skill
 
-从截图或实时屏幕识别图片、文字，返回目标框与物理屏幕坐标；需要时在最新位置单击或双击。默认只识别，只有显式使用 --execute 才会操作鼠标。
+从任意应用截图识别图片、文字；在 Windows 前台窗口实时定位并按最新位置点击。无需先写配置；默认只识别，显式使用 --execute 才会操作鼠标。
 
 ## 🌟 核心能力
 
@@ -12,31 +12,35 @@
 
 ## 🚀 快速开始
 
-需要 Python 3.11+。实时截图和鼠标操作支持 Windows；OCR 依赖 RapidOCR 与 ONNX Runtime。
+需要 Python 3.11+。静态截图分析可跨平台运行；实时截图和鼠标操作支持 Windows。OCR 依赖 RapidOCR 与 ONNX Runtime。
 
 ~~~bash
 python -m pip install -r requirements.txt
-python skills/visual-click-skill/scripts/locate.py --inspect
 ~~~
 
-按当前屏幕修改 config.example.json 中的 ROI、目标所在位置与阈值，再执行：
+Windows 可先运行 `python skills/visual-click-skill/scripts/locate.py --inspect` 查看前台窗口。直接识别保存的截图或当前前台窗口：
 
 ~~~bash
-# 先识别，输出目标框、置信度和屏幕坐标
-python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理"
+# 截图自动搜索整张图片，返回图片内的目标框
+python skills/visual-click-skill/scripts/locate.py --screenshot screenshot.png --text "设置"
 
-# 用户已授权点击时，一次命令完成连续帧校验和单击
-python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "代理" --execute
+# 当前窗口自动确定范围；可用 --roi 缩小搜索区域
+python skills/visual-click-skill/scripts/locate.py --live --text "设置" --roi 20 30 300 200
+
+# 已授权点击且目标应用处于前台时，连续帧复核后单击
+python skills/visual-click-skill/scripts/locate.py --live --text "设置" --execute
 ~~~
 
---live 默认检查连续稳定帧后返回一次结果。只有需要持续观察移动目标时才加 --watch；无需为一次点击先运行持续观察，再启动第二个识别进程。
+--roi 使用 [左 上 宽 高] 四个整数：实时模式相对当前窗口，截图模式相对图片。未提供配置时自动确定搜索范围；需要自定义阈值、屏幕原点、桌面双击时可使用 --config config.example.json。截图未提供配置时，coordinate_space=image，screen_center 数值也相对图片，不能直接用于桌面点击。
+
+--live 检查连续稳定帧后返回一次结果。持续观察移动目标时加 --watch；一次点击无需先运行持续观察。
 
 ## ⏱️ 等待动态目标
 
-示例配置最多等待 5 秒。页面加载或目标移动时会重试，满足稳定帧条件后立即返回；需要点击时再加 --execute。也可通过命令覆盖等待时间：
+默认最多等待 5 秒。页面加载或目标移动时会重试，满足稳定帧条件后立即返回；需要点击时再加 --execute。也可通过命令覆盖等待时间：
 
 ~~~bash
-python skills/visual-click-skill/scripts/locate.py --config config.example.json --live --text "确认" --timeout 8
+python skills/visual-click-skill/scripts/locate.py --live --text "确认" --timeout 8
 ~~~
 
 --timeout 对应 timeout_seconds，0 保持原有帧数限制；与 --watch 同用时限制观察总时长，watch_frames 仍可提前结束观察。计时不含 OCR 模型加载，单次识别不能强行中断，但识别或复核结束时若已超时不会点击。超时返回 timed_out=true、reason=timeout 和退出码 2。
@@ -54,6 +58,8 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 | 应用窗口 | roi_relative_to 为 window；填写 expected_window_title | roi 相对当前前台窗口左上角，每帧随窗口位置更新 |
 | 桌面图标 | roi_relative_to 为 screen；target_surface 为 desktop | screen_origin + roi 为物理屏幕截图区域 |
 | 已保存截图 | 使用 --screenshot | roi 为图片像素；screen_origin 为图片左上角的物理屏幕坐标 |
+
+无配置的已保存截图默认 screen_origin=[0,0]，只表示图片内坐标。若知道截图实际屏幕原点，可通过 --config 写入 screen_origin。
 
 roi 格式为 [左, 上, 宽, 高]。实时模式中 physical_pixels_per_image_pixel 必须为 1.0。--inspect 可查看显示器及前台窗口范围；桌面没有可用前台窗口时返回 null。
 
