@@ -1,6 +1,6 @@
 # 🎯 Visual-Click-Skill
 
-从任意应用截图识别图片、文字；在 Windows 前台窗口实时定位并按最新位置点击。无需先写配置；默认只识别，显式使用 --execute 才会操作鼠标。
+从任意应用截图识别图片、文字；在 Windows 前台窗口实时定位并按最新位置点击。自动适配常见显示缩放与窗口尺寸变化；默认只识别，显式使用 --execute 才会操作鼠标。
 
 ## 🌟 核心能力
 
@@ -31,7 +31,7 @@ python skills/visual-click-skill/scripts/locate.py --live --text "设置" --roi 
 python skills/visual-click-skill/scripts/locate.py --live --text "设置" --execute
 ~~~
 
---roi 使用 [左 上 宽 高] 四个整数：实时模式相对当前窗口，截图模式相对图片。未提供配置时自动确定搜索范围；需要自定义阈值、屏幕原点、桌面双击时可使用 --config config.example.json。截图未提供配置时，coordinate_space=image，screen_center 数值也相对图片，不能直接用于桌面点击。
+--roi 使用 [左 上 宽 高] 四个整数：实时模式相对当前窗口，截图模式相对图片。未提供配置且不传 --roi 时，实时模式每帧读取当前窗口大小；显式 --roi 保持固定的窗口相对区域。需要自定义阈值、屏幕原点、桌面双击时可使用 --config config.example.json。截图未提供配置时，coordinate_space=image，screen_center 数值也相对图片，不能直接用于桌面点击。
 
 --live 检查连续稳定帧后返回一次结果。持续观察移动目标时加 --watch；一次点击无需先运行持续观察。
 
@@ -82,7 +82,7 @@ python skills/visual-click-skill/scripts/locate.py --config config.example.json 
 ## 🔎 识别不稳时
 
 - 先缩小 ROI，核对模板或文字、阈值、DPI 与窗口位置。
-- 图片尺寸变化时配置 template_scales；图片和文字预处理默认均为 auto，无需选择方法。识别结果的 preprocess 字段会显示本次采用的方法。
+- template_scales 默认自动尝试 0.5～2 倍的常见尺寸；超出范围或有明确尺寸时可配置为数字列表。图片和文字预处理默认均为 auto，无需选择方法。识别结果的 template_scale 和 preprocess 显示命中的缩放比例与方法。
 - 图片识别先尝试灰度；未命中才尝试边缘、去噪、CLAHE 和 Otsu。实时模式优先复用上帧成功的方法；画面及截图位置完全不变时复用识别结果。增强方法可能放大噪声，先用 --evidence 核对结果再点击。
 - OCR 会在原图失败后优先尝试上次成功的方法，并跳过像素及尺寸完全相同的增强结果，减少重复推理。
 - 点击前会再次截图比较 ROI，阻止识别耗时期间画面变化造成的旧位置点击。出现 frame_changed_before_click 时重新定位；ROI 应避开无关动画。--execute 未发送点击时退出码为 2，发送后仍需核验应用结果。

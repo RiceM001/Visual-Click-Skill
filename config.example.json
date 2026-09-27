@@ -4,7 +4,7 @@
   "screen_origin": [0, 0],
   "physical_pixels_per_image_pixel": 1.0,
   "threshold": 0.9,
-  "template_scales": [1.0],
+  "template_scales": "auto",
   "template_preprocess": "auto",
   "template_denoise_kernel": 3,
   "template_clahe_clip_limit": 3.0,

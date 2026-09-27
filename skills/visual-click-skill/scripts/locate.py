@@ -78,7 +78,10 @@ def locate_once(screenshot: np.ndarray, template: np.ndarray, config: dict, meth
     validate_config(config, screenshot.shape)
     left, top, width, height = config["roi"]
     threshold = config["threshold"]
-    scales = config.get("template_scales", [1.0])
+    scales = config.get("template_scales", "auto")
+    if scales == "auto":
+        # 覆盖常见显示缩放及跨屏比例；原尺寸优先，且跳过超出 ROI 的尺寸。
+        scales = [1.0, 0.75, 1.25, 1.5, 0.5, 2.0, 0.8, 1.2, 1.333, 1.75]
     occurrence = config.get("template_occurrence")
     nms_iou = config.get("template_nms_iou", 0.3)
     max_candidates = config.get("template_max_candidates", 100)
@@ -509,6 +512,7 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     interval = config["frame_interval_ms"]
     shift = config["max_center_shift_px"]
     relative_to = config.get("roi_relative_to", "screen")
+    auto_window_roi = config.get("auto_window_roi", False)
     timeout = config.get("timeout_seconds", 0)
     limit = config.get("watch_frames") if on_frame else (None if timeout else count + bool(execute))
     if (type(count) is not int or count < 1
@@ -516,7 +520,9 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             or type(shift) not in (int, float) or not math.isfinite(shift) or shift < 0
             or (limit is not None and (type(limit) is not int or limit < 1))
             or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0
-            or relative_to not in ("screen", "window")):
+            or relative_to not in ("screen", "window")
+            or type(auto_window_roi) is not bool
+            or auto_window_roi and relative_to != "window"):
         raise ValueError("invalid stable_frames, frame_interval_ms, max_center_shift_px, watch_frames, timeout_seconds, or roi_relative_to")
     if relative_to == "window" and config.get("target_surface", "window") != "window":
         raise ValueError("window-relative ROI requires target_surface = window")
@@ -547,18 +553,22 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                     timed_out = True
                     break
             origin = config["screen_origin"]
+            frame_width, frame_height = width, height
             if relative_to == "window":
                 title, (window_left, window_top, window_right, window_bottom) = foreground_window()
                 expected = config.get("expected_window_title")
+                if auto_window_roi:
+                    frame_width, frame_height = window_right - window_left, window_bottom - window_top
                 if (not isinstance(expected, str) or not expected.strip()
                         or expected.casefold() not in title.casefold()
-                        or left + width > window_right - window_left
-                        or top + height > window_bottom - window_top):
+                        or frame_width <= 0 or frame_height <= 0
+                        or left + frame_width > window_right - window_left
+                        or top + frame_height > window_bottom - window_top):
                     raise ValueError("ROI is outside the expected foreground window")
                 origin = [window_left, window_top]
             region = {"left": origin[0] + left, "top": origin[1] + top,
-                      "width": width, "height": height}
-            local_config = {**config, "roi": [0, 0, width, height],
+                      "width": frame_width, "height": frame_height}
+            local_config = {**config, "roi": [0, 0, frame_width, frame_height],
                             "screen_origin": [region["left"], region["top"]]}
             gray = capture_gray(sct, region)
             # 原点和像素都不变才复用结果，窗口移动后必须重新映射屏幕坐标。
@@ -674,7 +684,8 @@ def main() -> int:
                     raise ValueError("active window has no title; use --config for screen capture")
                 config.update(roi=[0, 0, right - left, bottom - top], roi_relative_to="window",
                               target_surface="window", expected_window_title=title,
-                              screen_origin=[0, 0], physical_pixels_per_image_pixel=1.0)
+                              screen_origin=[0, 0], physical_pixels_per_image_pixel=1.0,
+                              auto_window_roi=args.roi is None)
             else:
                 config.update(roi=[0, 0, screenshot.shape[1], screenshot.shape[0]],
                               screen_origin=[0, 0], physical_pixels_per_image_pixel=1.0)

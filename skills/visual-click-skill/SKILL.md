@@ -8,7 +8,7 @@ description: 通用图片和文字定位：跨平台分析截图，在 Windows �
 ## 操作流程
 
 1. 从用户截图确认目标文字或模板。参考框只用于缩小搜索范围，不直接使用旧坐标。静态图片用 --screenshot；Windows 当前窗口用 --live。两者均可不写配置文件。
-2. 默认搜索整张截图或当前前台窗口；区域已知时加 --roi X Y W H。实时模式的 ROI 相对窗口左上角并随窗口移动；截图模式相对图片。桌面图标等特殊目标可通过 --config 指定 target_surface 为 desktop。
+2. 默认搜索整张截图或当前前台窗口；区域已知时加 --roi X Y W H。无配置且不传 --roi 时，整窗口 ROI 每帧随窗口大小变化；显式 ROI 只随窗口移动。截图模式的 ROI 相对图片。桌面图标等特殊目标可通过 --config 指定 target_surface 为 desktop。
 3. 用 --live 获取连续稳定帧后的当前目标框、置信度和屏幕坐标。示例配置最多等待 5 秒；--timeout 可覆盖等待时间，目标暂时缺失或移动时自动重试。持续观察用 --watch；重复目标先用 --evidence 查看编号并配置 occurrence。
 4. 默认只识别。用户明确要求操作时，再加 --execute：应用按钮用 click_count=1，桌面文件夹用 click_count=2，并配置 click_interval_ms。稳定后复核最新图像，再在点击前抓取 ROI 比较像素；画面改变则停止本次点击。窗口相对 ROI 模式还会核对窗口边界是否移动。--execute 只有真正发送点击后才返回退出码 0。
 5. 操作后独立核验新页面标题或资源管理器路径。结果不明时重新识别，最多重试一次，不连续盲点。
@@ -42,7 +42,7 @@ python scripts/locate.py --config config.example.json --live --text "1.6.3" --ex
 
 - 实时截图使用物理像素，physical_pixels_per_image_pixel 必须为 1.0。窗口模式的 roi 相对窗口左上角；屏幕模式使用 screen_origin + roi。副屏原点可能为负。
 - 不传 --config 的实时模式取当前窗口标题与边界，支持不同应用；执行前先让目标应用处于前台。若截图有已知桌面原点，使用 --config 设置 screen_origin 才能输出真实屏幕坐标。
-- 图片与 OCR 预处理默认使用 auto。实时 OCR 先尝试原图，再优先使用上次成功的增强方法；相同像素和尺寸的预处理结果只识别一次。画面及位置不变时复用识别结果。用 preprocess 和 --evidence 核验，模板大小变化时调整 template_scales。
+- 图片与 OCR 预处理默认使用 auto；模板尺寸默认尝试 0.5～2 倍的常见比例，超出范围时再配置 template_scales 数字列表。实时 OCR 先尝试原图，再优先使用上次成功的增强方法；相同像素和尺寸的预处理结果只识别一次。画面及位置不变时复用识别结果。用 template_scale、preprocess 和 --evidence 核验。
 - 出现 frame_changed_before_click 时重新定位；--watch 会继续等待稳定。ROI 应避开无关动画、视频和计时器，避免画面持续变化导致无法点击。退出码 0 只说明输入已发送，操作是否成功仍需按第 5 步核验。
 - timeout_seconds 或 --timeout 为正数时，普通实时模式也会自动重试；超时返回 timed_out=true、reason=timeout、退出码 2。0 保持原有帧数限制。计时不含 OCR 模型加载，无法中断正在运行的识别；超时后不开始点击。观察模式还受 watch_frames 限制。
 - 用 frames、elapsed_ms、cache_hits 判断定位耗时与缓存是否有效。中文文件名可直接用于模板、截图与证据图；空格路径加引号。

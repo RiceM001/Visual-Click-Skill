@@ -51,6 +51,24 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(result["image_bbox"], [45, 50, 30, 24])
         self.assertEqual(result["screen_center"], [-1845.0, 177.5])
 
+    def test_auto_template_scales_match_up_and_down(self):
+        rng = np.random.default_rng(101)
+        template = rng.integers(0, 256, (16, 20), dtype=np.uint8)
+        for factor in (0.75, 1.25):
+            with self.subTest(factor=factor):
+                screenshot = rng.integers(0, 256, (90, 110), dtype=np.uint8)
+                width, height = round(20 * factor), round(16 * factor)
+                screenshot[30:30 + height, 40:40 + width] = module.cv2.resize(
+                    template, (width, height), interpolation=(
+                        module.cv2.INTER_AREA if factor < 1 else module.cv2.INTER_CUBIC))
+                config = {"roi": [0, 0, 110, 90], "screen_origin": [0, 0],
+                          "physical_pixels_per_image_pixel": 1, "threshold": 0.995,
+                          "template_preprocess": ["gray"]}
+                result = module.locate(screenshot, template, config)
+                self.assertTrue(result["matched"])
+                self.assertEqual(result["template_scale"], factor)
+                self.assertEqual(result["image_bbox"], [40, 30, width, height])
+
     def test_duplicate_templates_block_click_until_occurrence_selected(self):
         rng = np.random.default_rng(22)
         template = rng.integers(0, 256, (10, 12), dtype=np.uint8)
@@ -161,6 +179,41 @@ class LocateTests(unittest.TestCase):
         self.assertFalse(result["clicked"])
         self.assertEqual(result["screen_center"], [-1890.0, 26.0])
         self.assertEqual(resize.call_count, 1)
+        click.assert_not_called()
+
+    def test_auto_window_roi_tracks_resize(self):
+        template = np.random.default_rng(102).integers(0, 256, (10, 12), dtype=np.uint8)
+        config = {"roi": [0, 0, 60, 50], "roi_relative_to": "window", "auto_window_roi": True,
+                  "screen_origin": [0, 0], "physical_pixels_per_image_pixel": 1,
+                  "threshold": 0.999, "template_scales": [1.0], "stable_frames": 2,
+                  "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "expected_window_title": "App", "target_surface": "window"}
+
+        class FakeMss:
+            monitors = []
+            regions = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def grab(self, region):
+                self.regions.append(region.copy())
+                gray = np.zeros((region["height"], region["width"]), dtype=np.uint8)
+                gray[10:20, 15:27] = template
+                return np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2)
+
+        windows = [("App", (100, 200, 160, 250)), ("App", (100, 200, 140, 240))]
+        with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", side_effect=windows),
+              mock.patch.object(module, "send_click") as click):
+            result = module.run_live(template, config, execute=False)
+        self.assertTrue(result["stable"])
+        self.assertEqual(result["screen_center"], [121.0, 215.0])
+        self.assertEqual([(r["width"], r["height"]) for r in FakeMss.regions], [(60, 50), (40, 40)])
         click.assert_not_called()
 
     def test_window_relative_roi_follows_moving_window(self):
@@ -748,7 +801,15 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(config["roi_relative_to"], "window")
         self.assertEqual(config["expected_window_title"], "通用应用")
         self.assertEqual(config["screen_origin"], [0, 0])
+        self.assertFalse(config["auto_window_roi"])  # 显式 --roi 保持固定区域。
         self.assertFalse(run.call_args.args[2])
+        with (mock.patch.object(sys, "argv", ["locate.py", "--live", "--text", "设置"]),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", return_value=("通用应用", (100, 200, 500, 400))),
+              mock.patch.object(module, "run_live", return_value={"matched": True, "stable": True}) as run,
+              mock.patch("builtins.print")):
+            self.assertEqual(module.main(), 0)
+        self.assertTrue(run.call_args.args[1]["auto_window_roi"])
 
 
 if __name__ == "__main__":
