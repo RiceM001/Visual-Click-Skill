@@ -326,6 +326,44 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(result["click_point"], [129.0, 214.0])
         click.assert_called_once()
 
+    def test_click_uses_fresh_monitors_after_display_change(self):
+        template = np.random.default_rng(103).integers(0, 256, (8, 8), dtype=np.uint8)
+        gray = np.zeros((40, 50), dtype=np.uint8)
+        gray[10:18, 20:28] = template
+        frame = module.cv2.cvtColor(gray, module.cv2.COLOR_GRAY2BGRA)
+        config = {"roi": [0, 0, 50, 40], "screen_origin": [100, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "template_scales": [1.0], "stable_frames": 1, "frame_interval_ms": 0,
+                  "max_center_shift_px": 0, "expected_window_title": "App",
+                  "target_surface": "window", "click_offset": [0, 0]}
+
+        class FakeMss:
+            created = 0
+
+            def __init__(self):
+                self.__class__.created += 1
+                width = 100 if self.created == 1 else 200
+                self.monitors = [None, {"left": 0, "top": 0, "width": width, "height": 100}]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def grab(self, _):
+                return frame
+
+        with (mock.patch.object(module.sys, "platform", "win32"),
+              mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "foreground_window", return_value=("App", (100, 0, 200, 100))),
+              mock.patch.object(module, "send_click") as click):
+            result = module.run_live(template, config, execute=True)
+        self.assertTrue(result["clicked"])
+        self.assertEqual(FakeMss.created, 2)
+        click.assert_called_once_with(124, 14)
+
     def test_execute_checks_window_before_click(self):
         result = {"matched": True, "stable": True, "screen_center": [-1850, 150]}
         config = {"expected_window_title": "Notepad", "click_offset": [2, -3]}

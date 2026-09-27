@@ -609,7 +609,9 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                     result["reason"] = "frame_changed_before_click"
                     first_corners, streak = None, 0
                 else:
-                    result["click_point"] = execute_click(result, config, sct.monitors)
+                    # MSS 缓存显示器列表；关开副屏后用新实例获取当前范围。
+                    with MSS() as current_sct:
+                        result["click_point"] = execute_click(result, config, current_sct.monitors)
                     result["clicked"] = True
                     result["click_count"] = config.get("click_count", 1)
             ready_to_click = result["stable"]
