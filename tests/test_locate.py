@@ -186,7 +186,7 @@ class LocateTests(unittest.TestCase):
         config = {"roi": [0, 0, 60, 50], "roi_relative_to": "window", "auto_window_roi": True,
                   "screen_origin": [0, 0], "physical_pixels_per_image_pixel": 1,
                   "threshold": 0.999, "template_scales": [1.0], "stable_frames": 2,
-                  "frame_interval_ms": 0, "max_center_shift_px": 0,
+                  "frame_interval_ms": 0, "max_center_shift_px": 0, "timeout_seconds": 1,
                   "expected_window_title": "App", "target_surface": "window"}
 
         class FakeMss:
@@ -205,7 +205,8 @@ class LocateTests(unittest.TestCase):
                 gray[10:20, 15:27] = template
                 return np.stack([gray, gray, gray, np.full_like(gray, 255)], axis=2)
 
-        windows = [("App", (100, 200, 160, 250)), ("App", (100, 200, 140, 240))]
+        windows = [("App", (100, 200, 160, 250)), ("App", (100, 200, 140, 240)),
+                   ("App", (100, 200, 140, 240))]
         with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
               mock.patch.object(module, "set_dpi_awareness"),
               mock.patch.object(module, "foreground_window", side_effect=windows),
@@ -213,7 +214,45 @@ class LocateTests(unittest.TestCase):
             result = module.run_live(template, config, execute=False)
         self.assertTrue(result["stable"])
         self.assertEqual(result["screen_center"], [121.0, 215.0])
-        self.assertEqual([(r["width"], r["height"]) for r in FakeMss.regions], [(60, 50), (40, 40)])
+        self.assertEqual([(r["width"], r["height"]) for r in FakeMss.regions],
+                         [(60, 50), (40, 40), (40, 40)])
+        click.assert_not_called()
+
+    def test_display_change_reopens_capture_and_resets_stability(self):
+        template = np.random.default_rng(104).integers(0, 256, (8, 8), dtype=np.uint8)
+        gray = np.zeros((40, 40), dtype=np.uint8)
+        gray[10:18, 15:23] = template
+        frame = module.cv2.cvtColor(gray, module.cv2.COLOR_GRAY2BGRA)
+        config = {"roi": [0, 0, 40, 40], "screen_origin": [0, 0],
+                  "physical_pixels_per_image_pixel": 1, "threshold": 0.99,
+                  "template_scales": [1.0], "stable_frames": 2,
+                  "frame_interval_ms": 0, "max_center_shift_px": 0, "timeout_seconds": 1}
+
+        class FakeMss:
+            created = 0
+
+            def __init__(self):
+                self.__class__.created += 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def grab(self, _):
+                return frame
+
+        with (mock.patch.dict(sys.modules, {"mss": SimpleNamespace(MSS=FakeMss)}),
+              mock.patch.object(module, "set_dpi_awareness"),
+              mock.patch.object(module, "display_geometry", side_effect=[(0, 0, 100, 100, 1),
+                                                                         (0, 0, 200, 100, 2),
+                                                                         (0, 0, 200, 100, 2)]),
+              mock.patch.object(module, "send_click") as click):
+            result = module.run_live(template, config, execute=False)
+        self.assertTrue(result["stable"])
+        self.assertEqual(result["frames"], 3)
+        self.assertEqual(FakeMss.created, 2)
         click.assert_not_called()
 
     def test_window_relative_roi_follows_moving_window(self):

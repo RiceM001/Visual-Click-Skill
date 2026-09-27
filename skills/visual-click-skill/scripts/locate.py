@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import cv2
@@ -346,6 +347,13 @@ def set_dpi_awareness() -> None:
             raise RuntimeError("per-monitor DPI awareness is required for live coordinates")
 
 
+def display_geometry() -> tuple[int, ...] | None:
+    """读取虚拟桌面边界与屏幕数量，供合盖或热插拔后刷新截图会话。"""
+    if sys.platform != "win32" or not hasattr(ctypes, "windll"):
+        return None
+    return tuple(ctypes.windll.user32.GetSystemMetrics(index) for index in (76, 77, 78, 79, 80))
+
+
 def foreground_window() -> tuple[str, tuple[int, int, int, int]]:
     from ctypes import wintypes
 
@@ -544,7 +552,9 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
     deadline = started + timeout if timeout else math.inf
     cache_hits = 0
     timed_out = False
-    with MSS() as sct:
+    with ExitStack() as captures:
+        sct = captures.enter_context(MSS())
+        previous_layout = None
         frame = 0
         while limit is None or frame < limit:
             if frame:
@@ -566,6 +576,15 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
                         or top + frame_height > window_bottom - window_top):
                     raise ValueError("ROI is outside the expected foreground window")
                 origin = [window_left, window_top]
+            layout = (display_geometry(),
+                      (window_right - window_left, window_bottom - window_top)
+                      if relative_to == "window" else None)
+            if previous_layout is not None and layout != previous_layout:
+                captures.close()
+                sct = captures.enter_context(MSS())
+                previous_region = previous_gray = previous_result = None
+                first_corners, streak, ready_to_click = None, 0, False
+            previous_layout = layout
             region = {"left": origin[0] + left, "top": origin[1] + top,
                       "width": frame_width, "height": frame_height}
             local_config = {**config, "roi": [0, 0, frame_width, frame_height],
@@ -600,20 +619,25 @@ def run_live(target: np.ndarray | str, config: dict, execute: bool,
             timed_out = time.monotonic() >= deadline
             if execute and result["stable"] and ready_to_click and not moved and not timed_out:
                 # OCR 耗时期间目标可能改变，输入前再次确认 ROI 像素未变。
-                latest = capture_gray(sct, region)
-                timed_out = time.monotonic() >= deadline
-                if timed_out:
+                if display_geometry() != layout[0]:
                     result["stable"] = False
-                elif not np.array_equal(gray, latest):
-                    result["stable"] = False
-                    result["reason"] = "frame_changed_before_click"
+                    result["reason"] = "display_changed_before_click"
                     first_corners, streak = None, 0
                 else:
-                    # MSS 缓存显示器列表；关开副屏后用新实例获取当前范围。
-                    with MSS() as current_sct:
-                        result["click_point"] = execute_click(result, config, current_sct.monitors)
-                    result["clicked"] = True
-                    result["click_count"] = config.get("click_count", 1)
+                    latest = capture_gray(sct, region)
+                    timed_out = time.monotonic() >= deadline
+                    if timed_out:
+                        result["stable"] = False
+                    elif not np.array_equal(gray, latest):
+                        result["stable"] = False
+                        result["reason"] = "frame_changed_before_click"
+                        first_corners, streak = None, 0
+                    else:
+                        # MSS 缓存显示器列表；关开副屏后用新实例获取当前范围。
+                        with MSS() as current_sct:
+                            result["click_point"] = execute_click(result, config, current_sct.monitors)
+                        result["clicked"] = True
+                        result["click_count"] = config.get("click_count", 1)
             ready_to_click = result["stable"]
             if timed_out:
                 result.update(stable=False, timed_out=True, reason="timeout")

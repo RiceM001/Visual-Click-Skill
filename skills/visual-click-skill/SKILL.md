@@ -41,7 +41,7 @@ python scripts/locate.py --config config.example.json --live --text "1.6.3" --ex
 ## 坐标与排障
 
 - 实时截图使用物理像素，physical_pixels_per_image_pixel 必须为 1.0。窗口模式的 roi 相对窗口左上角；屏幕模式使用 screen_origin + roi。副屏原点可能为负。
-- 多屏关开后，窗口模式逐帧读取当前边界；点击前重新枚举显示器，避免使用 MSS 缓存的旧范围。显式指定的屏幕相对 ROI 仍需按当前布局核对。
+- 笔记本合盖、开盖或多屏关开后，虚拟桌面范围或屏幕数量变化会重建 MSS 截图会话并清除旧稳定帧；窗口模式还跟踪当前边界。点击前再次核对桌面布局与显示器范围。显式指定的屏幕相对 ROI 仍需按当前布局核对。
 - 不传 --config 的实时模式取当前窗口标题与边界，支持不同应用；执行前先让目标应用处于前台。若截图有已知桌面原点，使用 --config 设置 screen_origin 才能输出真实屏幕坐标。
 - 图片与 OCR 预处理默认使用 auto；模板尺寸默认尝试 0.5～2 倍的常见比例，超出范围时再配置 template_scales 数字列表。实时 OCR 先尝试原图，再优先使用上次成功的增强方法；相同像素和尺寸的预处理结果只识别一次。画面及位置不变时复用识别结果。用 template_scale、preprocess 和 --evidence 核验。
 - 出现 frame_changed_before_click 时重新定位；--watch 会继续等待稳定。ROI 应避开无关动画、视频和计时器，避免画面持续变化导致无法点击。退出码 0 只说明输入已发送，操作是否成功仍需按第 5 步核验。
